@@ -523,6 +523,174 @@ router.delete(
   }
 );
 
+//Unbooked Slots by Date (Doctor / Receptionist / Client)
+router.get(
+  "/staff/time-slots/unbooked/filter",
+  authMiddleware,
+  allowRoles("doctor", "receptionist", "client"),
+  async (req, res) => {
+    try {
+      let { date, doctorId, branch } = req.query;
+      const role = req.user.role;
+      const adminId = req.user.adminId;
+      const staffId = req.user.id;
+
+      // 🔹 Normalize branch from query
+      branch = branch ? branch.trim().toLowerCase() : null;
+
+      let enforcedBranch = null;
+
+      /* ===============================
+         👨‍⚕️ DOCTOR VALIDATION
+      =============================== */
+      if (role === "doctor") {
+        if (doctorId && Number(doctorId) !== staffId) {
+          return res.status(403).json({
+            message: "You are not allowed to view other doctors' slots",
+          });
+        }
+
+        if (branch) {
+          return res.status(403).json({
+            message: "Doctors cannot filter by branch",
+          });
+        }
+      }
+
+      /* ===============================
+         🧑‍💼 RECEPTIONIST VALIDATION
+      =============================== */
+      if (role === "receptionist") {
+        const [[receptionist]] = await db.query(
+          `
+          SELECT TRIM(LOWER(branch)) AS branch
+          FROM staff
+          WHERE id = ?
+            AND admin_id = ?
+            AND role = 'receptionist'
+            AND status = 1
+          `,
+          [staffId, adminId]
+        );
+
+        if (!receptionist) {
+          return res.status(403).json({ message: "Invalid receptionist" });
+        }
+
+        enforcedBranch = receptionist.branch;
+
+        // ❌ Block other branch
+        if (branch && branch !== enforcedBranch) {
+          return res.status(403).json({
+            message: "You are not allowed to view other branch doctors",
+          });
+        }
+
+        // ❌ Block other-branch doctorId
+        if (doctorId) {
+          const [[doctor]] = await db.query(
+            `
+            SELECT id
+            FROM staff
+            WHERE id = ?
+              AND role = 'doctor'
+              AND TRIM(LOWER(branch)) = ?
+            `,
+            [doctorId, enforcedBranch]
+          );
+
+          if (!doctor) {
+            return res.status(403).json({
+              message: "Other branch doctor slots are not visible for receptionist",
+            });
+          }
+        }
+      }
+
+      /* ===============================
+         👤 CLIENT VALIDATION
+      =============================== */
+      if (role === "client" && !branch) {
+        return res.status(400).json({
+          message: "branch is required for client",
+        });
+      }
+
+      /* ===============================
+         MAIN QUERY
+      =============================== */
+      let query = `
+        SELECT
+          sts.id,
+          DATE_FORMAT(sts.slot_date, '%Y-%m-%d') AS slot_date,
+          sts.slot_time_from,
+          sts.slot_time_to,
+          sts.is_booked,
+          s.id AS doctor_id,
+          s.name AS doctor_name,
+          s.branch
+        FROM staff_time_slots sts
+        JOIN staff s ON s.id = sts.staff_id
+        WHERE sts.admin_id = ?
+          AND sts.is_booked = 0
+          AND s.role = 'doctor'
+      `;
+
+      const params = [adminId];
+
+      if (role === "doctor") {
+        query += ` AND s.id = ? `;
+        params.push(staffId);
+      }
+
+      if (role === "receptionist") {
+        query += ` AND TRIM(LOWER(s.branch)) = ? `;
+        params.push(enforcedBranch);
+
+        if (doctorId) {
+          query += ` AND s.id = ? `;
+          params.push(Number(doctorId));
+        }
+      }
+
+      if (role === "client") {
+        query += ` AND TRIM(LOWER(s.branch)) = ? `;
+        params.push(branch);
+
+        if (doctorId) {
+          query += ` AND s.id = ? `;
+          params.push(Number(doctorId));
+        }
+      }
+
+      if (date) {
+        query += ` AND sts.slot_date = ? `;
+        params.push(date);
+      }
+
+      query += ` ORDER BY s.name, sts.slot_time_from `;
+
+      const [slots] = await db.query(query, params);
+
+      return res.status(200).json({
+        date: date || null,
+        branch:
+          role === "receptionist"
+            ? enforcedBranch
+            : role === "client"
+            ? branch
+            : null,
+        doctorId: doctorId ? Number(doctorId) : null,
+        totalUnbookedSlots: slots.length,
+        slots,
+      });
+    } catch (error) {
+      console.error("Filtered unbooked slots error:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  }
+);
+
 
 
 

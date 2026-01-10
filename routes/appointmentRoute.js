@@ -318,6 +318,7 @@ router.get(
         `SELECT
           a.id,
           a.purpose, -- ✅ NEW
+          a.selected_branch, -- ✅ NEW
           DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
           TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
           TIME_FORMAT(a.to_time, '%H:%i') AS to_time,
@@ -372,6 +373,302 @@ router.get(
     }
   }
 );
+// ======================total list appointments for admin with branch and client filter======================
+router.get(
+  "/admin/appointments",
+  authMiddleware,
+  allowRoles("admin", "client", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const { role, id: userId } = req.user;
+      const adminId = role === "admin" ? req.user.id : req.user.adminId;
+
+      let { date, branch, staffId } = req.query;
+      branch = branch ? branch.trim().toLowerCase() : null;
+
+      // ==========================
+      // BASE WHERE CONDITIONS
+      // ==========================
+      let baseWhere = `a.admin_id = ?`;
+      let baseParams = [adminId];
+
+      if (role === "client") {
+        baseWhere += " AND a.client_id = ?";
+        baseParams.push(userId);
+      }
+
+      if (role === "doctor") {
+        baseWhere += " AND a.staff_id = ?";
+        baseParams.push(userId);
+      }
+
+      // ==========================
+      // RECEPTIONIST BRANCH CONTROL
+      // ==========================
+      if (role === "receptionist") {
+        const [[receptionist]] = await db.query(
+          `SELECT branch
+           FROM staff
+           WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+          [userId, adminId]
+        );
+
+        if (!receptionist || !receptionist.branch) {
+          return res.status(403).json({
+            success: false,
+            message: "Invalid receptionist branch",
+          });
+        }
+
+        const recBranch = receptionist.branch.trim().toLowerCase();
+
+        baseWhere += " AND LOWER(a.selected_branch) = ?";
+        baseParams.push(recBranch);
+
+        branch = recBranch;
+      }
+
+      // ==========================
+      // ADMIN BRANCH FILTER
+      // ==========================
+      if (role === "admin" && branch) {
+        baseWhere += " AND LOWER(a.selected_branch) = ?";
+        baseParams.push(branch);
+      }
+
+      // ==========================
+      // 🔥 STAFF FILTER (ADMIN + RECEPTIONIST)
+      // ==========================
+      if (
+        staffId &&
+        (role === "admin" || role === "receptionist")
+      ) {
+        baseWhere += " AND a.staff_id = ?";
+        baseParams.push(staffId);
+      }
+
+      // ==========================
+      // DATE FILTER
+      // ==========================
+      let listWhere = baseWhere;
+      let listParams = [...baseParams];
+
+      if (date) {
+        listWhere += " AND DATE(a.appointment_date) = ?";
+        listParams.push(date);
+      }
+
+      // ==========================
+      // FETCH APPOINTMENTS
+      // ==========================
+      const [appointments] = await db.query(
+        `SELECT
+          a.id,
+          a.purpose,
+          DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
+          TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
+          TIME_FORMAT(a.to_time, '%H:%i') AS to_time,
+          a.status,
+          a.created_at,
+          a.selected_branch,
+          c.id AS client_id,
+          c.name AS client_name,
+          s.id AS doctor_id,
+          s.name AS doctor_name
+         FROM appointments a
+         JOIN clients c ON c.id = a.client_id
+         JOIN staff s ON s.id = a.staff_id
+         WHERE ${listWhere}
+         ORDER BY appointment_date DESC, from_time ASC`,
+        listParams
+      );
+
+      // ==========================
+      // TOTAL APPOINTMENTS
+      // ==========================
+      let totalAppointments = appointments.length;
+
+      if (role === "admin") {
+        const today = new Date().toISOString().split("T")[0];
+        const [[totalResult]] = await db.query(
+          `SELECT COUNT(*) AS totalAppointments
+           FROM appointments a
+           WHERE ${baseWhere}
+             AND DATE(a.appointment_date) <= ?`,
+          [...baseParams, today]
+        );
+        totalAppointments = totalResult.totalAppointments;
+      }
+
+      return res.status(200).json({
+        success: true,
+        role,
+        branch: branch || "all",
+        date: date || null,
+        staffId: staffId || null,
+        count: appointments.length,
+        totalAppointments,
+        appointments,
+      });
+    } catch (error) {
+      console.error("Appointments list error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+);
+// ======================total list appointments for admin with branch and client filter======================
+router.get(
+  "/admin/client/appointments",
+  authMiddleware,
+  allowRoles("admin", "client", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const { role, id: userId } = req.user;
+      const adminId = role === "admin" ? req.user.id : req.user.adminId;
+
+      let { date, branch, clientId } = req.query;
+      branch = branch ? branch.trim().toLowerCase() : null;
+
+      // ==========================
+      // BASE WHERE CONDITIONS
+      // ==========================
+      let baseWhere = `a.admin_id = ?`;
+      let baseParams = [adminId];
+
+      // 🔒 Client can only see their own appointments
+      if (role === "client") {
+        baseWhere += " AND a.client_id = ?";
+        baseParams.push(userId);
+      }
+
+      // 🔒 Doctor can only see their own appointments
+      if (role === "doctor") {
+        baseWhere += " AND a.staff_id = ?";
+        baseParams.push(userId);
+      }
+
+      // ==========================
+      // RECEPTIONIST BRANCH CONTROL
+      // ==========================
+      if (role === "receptionist") {
+        const [[receptionist]] = await db.query(
+          `SELECT branch
+           FROM staff
+           WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+          [userId, adminId]
+        );
+
+        if (!receptionist || !receptionist.branch) {
+          return res.status(403).json({
+            success: false,
+            message: "Invalid receptionist branch",
+          });
+        }
+
+        const recBranch = receptionist.branch.trim().toLowerCase();
+
+        baseWhere += " AND LOWER(a.selected_branch) = ?";
+        baseParams.push(recBranch);
+
+        branch = recBranch;
+      }
+
+      // ==========================
+      // ADMIN BRANCH FILTER
+      // ==========================
+      if (role === "admin" && branch) {
+        baseWhere += " AND LOWER(a.selected_branch) = ?";
+        baseParams.push(branch);
+      }
+
+      // ==========================
+      // 🔥 CLIENT FILTER (ADMIN + RECEPTIONIST)
+      // ==========================
+      if (
+        clientId &&
+        (role === "admin" || role === "receptionist")
+      ) {
+        baseWhere += " AND a.client_id = ?";
+        baseParams.push(clientId);
+      }
+
+      // ==========================
+      // DATE FILTER
+      // ==========================
+      let listWhere = baseWhere;
+      let listParams = [...baseParams];
+
+      if (date) {
+        listWhere += " AND DATE(a.appointment_date) = ?";
+        listParams.push(date);
+      }
+
+      // ==========================
+      // FETCH APPOINTMENTS
+      // ==========================
+      const [appointments] = await db.query(
+        `SELECT
+          a.id,
+          a.purpose,
+          DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
+          TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
+          TIME_FORMAT(a.to_time, '%H:%i') AS to_time,
+          a.status,
+          a.created_at,
+          a.selected_branch,
+          c.id AS client_id,
+          c.name AS client_name,
+          s.id AS doctor_id,
+          s.name AS doctor_name
+         FROM appointments a
+         JOIN clients c ON c.id = a.client_id
+         JOIN staff s ON s.id = a.staff_id
+         WHERE ${listWhere}
+         ORDER BY appointment_date DESC, from_time ASC`,
+        listParams
+      );
+
+      // ==========================
+      // TOTAL APPOINTMENTS
+      // ==========================
+      let totalAppointments = appointments.length;
+
+      if (role === "admin") {
+        const today = new Date().toISOString().split("T")[0];
+        const [[totalResult]] = await db.query(
+          `SELECT COUNT(*) AS totalAppointments
+           FROM appointments a
+           WHERE ${baseWhere}
+             AND DATE(a.appointment_date) <= ?`,
+          [...baseParams, today]
+        );
+        totalAppointments = totalResult.totalAppointments;
+      }
+
+      return res.status(200).json({
+        success: true,
+        role,
+        branch: branch || "all",
+        date: date || null,
+        clientId: clientId || null,
+        count: appointments.length,
+        totalAppointments,
+        appointments,
+      });
+    } catch (error) {
+      console.error("Appointments list error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+);
+
+
 
 // ===================== CANCEL APPOINTMENT =====================
 router.put(
@@ -1114,6 +1411,7 @@ router.get(
         `SELECT
           a.id,
           a.purpose,
+          a.selected_branch,
           DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
           TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
           TIME_FORMAT(a.to_time, '%H:%i') AS to_time,

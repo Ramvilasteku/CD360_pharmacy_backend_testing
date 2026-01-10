@@ -213,6 +213,87 @@ router.get(
   }
 );
 
+// GET THE BILLS BY ID (Admin | Receptionist | Client)
+router.get(
+  "/bills/:id",
+  authMiddleware,
+  allowRoles("admin", "receptionist", "client"),
+  async (req, res) => {
+    try {
+      const { role, id: userId } = req.user;
+      const adminId = resolveAdminId(req.user);
+      const billId = Number(req.params.id);
+
+      if (!billId) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid bill ID",
+        });
+      }
+
+      let where = [
+        "b.id = ?",
+        "b.admin_id = ?"
+      ];
+      let params = [billId, adminId];
+
+      /* 🔐 CLIENT ACCESS LIMIT */
+      if (role === "client") {
+        where.push("b.client_id = ?");
+        params.push(userId);
+      }
+
+      const [rows] = await db.query(
+        `
+        SELECT
+          b.id AS bill_id,
+          b.appointment_id,
+          b.client_id,
+          b.staff_id,
+          b.subtotal,
+          b.tax,
+          b.total_amount,
+          b.bill_status,
+          b.notes,
+          b.created_at,
+
+          c.name AS client_name,
+          s.name AS staff_name,
+          s.role AS staff_role,
+          s.branch
+
+        FROM bills b
+        JOIN clients c ON c.id = b.client_id
+        LEFT JOIN staff s ON s.id = b.staff_id
+        WHERE ${where.join(" AND ")}
+        LIMIT 1
+        `,
+        params
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Bill not found or access denied",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        bill: rows[0],
+      });
+
+    } catch (error) {
+      console.error("GET BILL BY ID ERROR:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+);
+
+
 /* =========================================================
    ✏️ UPDATE BILL (Admin | Receptionist)
 ========================================================= */

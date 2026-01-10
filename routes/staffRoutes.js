@@ -455,7 +455,7 @@ router.delete(
 ====================================================== */
 
 router.get(
-  "/staff/get/client",
+  "/staff/doctors/client",
   authMiddleware,
   allowRoles("client"),
   async (req, res) => {
