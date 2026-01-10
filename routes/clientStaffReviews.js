@@ -159,7 +159,6 @@ router.post(
   }
 );
 
-
 //Admin Reviews Route
 router.get(
   "/admin/reviews",
@@ -167,16 +166,30 @@ router.get(
   allowRoles("admin"),
   async (req, res) => {
     try {
-      const adminId = req.user.id; // from login token/cookie
+      const adminId = req.user.id;
 
       const [reviews] = await db.query(
-        `SELECT csr.id, csr.request_id, csr.staff_id, csr.client_id, csr.rating, csr.review, csr.created_at,
-                s.name AS staff_name, c.name AS client_name
-         FROM client_staff_reviews csr
-         LEFT JOIN staff s ON csr.staff_id = s.id
-         LEFT JOIN clients c ON csr.client_id = c.id
-         WHERE csr.admin_id = ?
-         ORDER BY csr.created_at DESC`,
+        `
+        SELECT
+          csr.staff_id,
+          s.name AS staff_name,
+
+          COUNT(csr.id) AS total_reviews,
+          ROUND(AVG(csr.rating), 1) AS avg_rating,
+
+          SUM(csr.rating = 5) AS rating_5,
+          SUM(csr.rating = 4) AS rating_4,
+          SUM(csr.rating = 3) AS rating_3,
+          SUM(csr.rating = 2) AS rating_2,
+          SUM(csr.rating = 1) AS rating_1
+
+        FROM client_staff_reviews csr
+        LEFT JOIN staff s ON csr.staff_id = s.id
+
+        WHERE csr.admin_id = ?
+        GROUP BY csr.staff_id, s.name
+        ORDER BY avg_rating DESC
+        `,
         [adminId]
       );
 
@@ -187,125 +200,137 @@ router.get(
     }
   }
 );
-
-
-
-//Staff Reviews Route
-
+/* =========================================================
+   📋 GET REVIEWS (ADMIN | RECEPTIONIST | DOCTOR | CLIENT)
+========================================================= */
 router.get(
-  "/staff/reviews",
+  "/reviews",
   authMiddleware,
-  allowRoles("staff"),
+  allowRoles("admin", "receptionist", "doctor", "client"),
   async (req, res) => {
     try {
-      const staffId = req.user.id; // from login token/cookie
+      const { role, id: userId, adminId: tokenAdminId } = req.user;
 
-      const [reviews] = await db.query(
-        `SELECT csr.id, csr.request_id, csr.admin_id, csr.client_id, csr.rating, csr.review, csr.created_at,
-                a.name AS admin_name, c.name AS client_name
-         FROM client_staff_reviews csr
-         LEFT JOIN admins a ON csr.admin_id = a.id
-         LEFT JOIN clients c ON csr.client_id = c.id
-         WHERE csr.staff_id = ?
-         ORDER BY csr.created_at DESC`,
-        [staffId]
-      );
+      let { branch, doctorId, appointment_id } = req.query;
 
-      res.json({ reviews });
-    } catch (err) {
-      console.error("Error fetching staff reviews:", err);
-      res.status(500).json({ message: "Internal server error" });
-    }
-  }
-);
+      branch = branch ? branch.trim().toLowerCase() : null;
+      doctorId = doctorId ? Number(doctorId) : null;
+      appointment_id = appointment_id ? Number(appointment_id) : null;
 
+      const adminId = role === "admin" ? userId : tokenAdminId;
 
-//Client Reviews Route
+      let whereClause = `csr.admin_id = ?`;
+      const params = [adminId];
 
-router.get(
-  "/client/reviews",
-  authMiddleware,
-  allowRoles("client"),
-  async (req, res) => {
-    try {
-      const clientId = req.user.id; // from login token/cookie
+      /* =========================
+         ROLE BASED ACCESS
+      ========================== */
 
-      const [reviews] = await db.query(
-        `SELECT csr.id, csr.request_id, csr.admin_id, csr.staff_id, csr.rating, csr.review, csr.created_at,
-                a.name AS admin_name,
-                s.name AS staff_name
-         FROM client_staff_reviews csr
-         LEFT JOIN admins a ON csr.admin_id = a.id
-         LEFT JOIN staff s ON csr.staff_id = s.id
-         WHERE csr.client_id = ?
-         ORDER BY csr.created_at DESC`,
-        [clientId]
-      );
-
-      res.json({ reviews });
-    } catch (err) {
-      console.error("Error fetching client reviews:", err);
-      res.status(500).json({ message: "Internal server error" });
-    }
-  }
-);
-
-//Admin Reviews Route with the review id
-
-router.get(
-  "/reviews/details/:reviewId",
-  authMiddleware,
-  allowRoles("admin", "staff", "client"),
-  async (req, res) => {
-    try {
-      const { reviewId } = req.params;
-
-      const adminId =
-        req.user.role === "admin" ? req.user.id : req.user.adminId;
-
-      const [rows] = await db.execute(
-        `
-        SELECT
-            csr.id AS review_id,
-            csr.rating,
-            csr.review,
-            csr.created_at AS review_created_at,
-
-            sr.id AS request_id,
-            sr.status,
-            sr.preferred_date,
-            sr.description,
-
-            c.id AS client_id,
-            c.name AS client_name,
-
-            ct.name AS compliance_type,
-
-            s.id AS staff_id,
-            s.name AS staff_name
-
-        FROM client_staff_reviews csr
-        JOIN service_request sr ON csr.request_id = sr.id
-        JOIN clients c ON sr.client_id = c.id
-        JOIN compliance_types ct ON sr.compliance_type_id = ct.id
-        LEFT JOIN staff s ON sr.staff_id = s.id
-        WHERE csr.id = ?
-          AND csr.admin_id = ?
-        `,
-        [reviewId, adminId]
-      );
-
-      if (!rows.length) {
-        return res.status(404).json({ message: "Review not found" });
+      // CLIENT → only own reviews
+      if (role === "client") {
+        whereClause += ` AND csr.client_id = ?`;
+        params.push(userId);
       }
 
-      res.json(rows[0]);
-    } catch (err) {
-      console.error("REVIEW DETAILS ERROR:", err);
-      res.status(500).json({ message: "Server error" });
+      // DOCTOR → only own reviews
+      if (role === "doctor") {
+        whereClause += ` AND csr.staff_id = ?`;
+        params.push(userId);
+      }
+
+      // RECEPTIONIST → FORCE OWN BRANCH ONLY
+      if (role === "receptionist") {
+        const [[receptionist]] = await db.query(
+          `SELECT branch
+           FROM staff
+           WHERE id = ?
+             AND admin_id = ?
+             AND role = 'receptionist'
+             AND status = 1`,
+          [userId, adminId]
+        );
+
+        if (!receptionist || !receptionist.branch) {
+          return res.status(403).json({
+            success: false,
+            message: "Invalid receptionist branch"
+          });
+        }
+
+        const recBranch = receptionist.branch.trim().toLowerCase();
+        whereClause += ` AND LOWER(s.branch) = ?`;
+        params.push(recBranch);
+
+        branch = recBranch; // override filter
+      }
+
+      // ADMIN → optional branch filter
+      if (role === "admin" && branch) {
+        whereClause += ` AND LOWER(s.branch) = ?`;
+        params.push(branch);
+      }
+
+      // Doctor filter (admin & receptionist only)
+      if ((role === "admin" || role === "receptionist") && doctorId) {
+        whereClause += ` AND s.id = ?`;
+        params.push(doctorId);
+      }
+
+      // Appointment filter (all roles)
+      if (appointment_id) {
+        whereClause += ` AND csr.appointment_id = ?`;
+        params.push(appointment_id);
+      }
+
+      /* =========================
+         FETCH REVIEWS
+      ========================== */
+      const [reviews] = await db.query(
+        `
+        SELECT
+          csr.id AS review_id,
+          csr.appointment_id,
+          csr.rating,
+          csr.review,
+          csr.created_at,
+
+          c.id AS client_id,
+          c.name AS client_name,
+
+          s.id AS staff_id,
+          s.name AS doctor_name,
+          s.branch
+        FROM client_staff_reviews csr
+        JOIN clients c ON c.id = csr.client_id
+        JOIN staff s ON s.id = csr.staff_id
+        WHERE ${whereClause}
+        ORDER BY csr.created_at DESC
+        `,
+        params
+      );
+
+      return res.status(200).json({
+        success: true,
+        role,
+        branch: branch || "all",
+        doctorId: doctorId || null,
+        appointment_id: appointment_id || null,
+        count: reviews.length,
+        reviews
+      });
+
+    } catch (error) {
+      console.error("FETCH REVIEWS ERROR:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error"
+      });
     }
   }
 );
+
+
+//calculate overall reviews percentage 
 
 router.get(
   "/doctor/overall-percentage",
@@ -361,5 +386,6 @@ router.get(
     }
   }
 );
+
 
 module.exports = router;

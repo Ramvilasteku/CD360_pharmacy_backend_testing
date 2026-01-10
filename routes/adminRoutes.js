@@ -259,6 +259,50 @@ router.put(
 );
 
 /* ======================================================
+   GET COMPANY INFO TO CLIENT AND STAFF (DOCTOR, RECEPTIONIST)
+====================================================== */
+router.get(
+  "/company-info",
+  authMiddleware,
+  allowRoles("client", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const { adminId } = req.user;
+
+      if (!adminId) {
+        return res.status(400).json({
+          success: false,
+          message: "Admin ID not associated with this user",
+        });
+      }
+
+      const [rows] = await db.execute(
+        "SELECT id AS adminId, company_name, company_logo FROM admins WHERE id = ?",
+        [adminId]
+      );
+
+      if (!rows.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Admin not found",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: rows[0],
+      });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
+    }
+  }
+);
+
+/* ======================================================
    DELETE ADMIN
 ====================================================== */
 router.delete("/admin/delete/:id", async (req, res) => {

@@ -27,8 +27,21 @@ const BASE_UPLOAD_DIR = path.join(__dirname, "..", "Images", "companies");
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const adminId = req.user.id; // ✅ from cookie
-    const staffId = req.generatedStaffId || req.params.id;
+    // 🔹 support both admin & other roles
+    const adminId = req.user?.adminId || req.user?.id;
+
+    if (!adminId) {
+      return cb(new Error("Admin ID missing from token"));
+    }
+
+    // 🔹 Get staffId from multiple sources
+    const staffId = req.generatedStaffId  // new staff creation
+                 || req.params.id         // admin updating staff
+                 || req.user.id;          // ✅ staff updating self
+
+    if (!staffId) {
+      return cb(new Error("Staff ID missing"));
+    }
 
     const uploadPath = path.join(
       BASE_UPLOAD_DIR,

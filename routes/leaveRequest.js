@@ -132,19 +132,22 @@ router.get(
 router.get(
   "/leave/getownall",
   authMiddleware,
-  allowRoles("staff"),
+  allowRoles("doctor", "receptionist"),
   async (req, res) => {
     try {
-      const staff_id = req.user.id;
+      const staff_id = req.user.id; // doctor or receptionist id
 
       const [rows] = await db.execute(
         `SELECT * FROM leave_requests WHERE staff_id = ? ORDER BY id DESC`,
         [staff_id]
       );
 
-      res.status(200).json({ success: true, data: rows });
+      return res.status(200).json({
+        success: true,
+        data: rows,
+      });
     } catch (error) {
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         error: "Server error",
         details: error.message,
@@ -221,123 +224,123 @@ router.get(
 router.put(
   "/leave/update/:id",
   authMiddleware,
-  allowRoles("admin"), // 🔥 ADMIN ONLY
+  allowRoles("admin", "doctor", "receptionist"),
   async (req, res) => {
     try {
-      const admin = req.user;
+      const user = req.user;
       const requestId = req.params.id;
-      const { status } = req.body;
+      const { leave_type, start_date, end_date, reason, status } = req.body;
 
-      if (!status || !["Approved", "Rejected"].includes(status)) {
-        return res.status(400).json({
-          success: false,
-          message: "Status must be Approved or Rejected",
-        });
+      // =====================================================
+      // DOCTOR / RECEPTIONIST: edit ONLY their own PENDING leave
+      // =====================================================
+      if (user.role === "doctor" || user.role === "receptionist") {
+        const [data] = await db.execute(
+          `SELECT * FROM leave_requests WHERE id = ? AND staff_id = ?`,
+          [requestId, user.id]
+        );
+
+        if (data.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: "Leave request not found",
+          });
+        }
+
+        if (data[0].status !== "Pending") {
+          return res.status(403).json({
+            success: false,
+            message: "Only pending requests can be updated",
+          });
+        }
+
+        await db.execute(
+          `UPDATE leave_requests 
+           SET leave_type=?, start_date=?, end_date=?, reason=?
+           WHERE id=?`,
+          [
+            leave_type || data[0].leave_type,
+            start_date || data[0].start_date,
+            end_date || data[0].end_date,
+            reason || data[0].reason,
+            requestId,
+          ]
+        );
       }
 
-      // ==============================
-      // FETCH LEAVE REQUEST
-      // ==============================
-      const [leaveData] = await db.execute(
-        `SELECT * FROM leave_requests WHERE id = ?`,
-        [requestId]
-      );
+      // ======================================
+      // ADMIN: approve or reject leave request
+      // ======================================
+      if (user.role === "admin") {
+        if (!status) {
+          return res.status(400).json({
+            success: false,
+            message: "Status required (Approved or Rejected)",
+          });
+        }
 
-      if (leaveData.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Leave request not found",
-        });
-      }
+        const [leaveData] = await db.execute(
+          `SELECT * FROM leave_requests WHERE id = ?`,
+          [requestId]
+        );
 
-      const leave = leaveData[0];
+        if (leaveData.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: "Leave request not found",
+          });
+        }
 
-      // ==============================
-      // UPDATE LEAVE STATUS
-      // ==============================
-      await db.execute(
-        `UPDATE leave_requests SET status = ? WHERE id = ?`,
-        [status, requestId]
-      );
+        const staffId = leaveData[0].staff_id;
 
-      // ==============================
-      // FETCH STAFF ROLE (doctor / receptionist)
-      // ==============================
-      const [staffData] = await db.execute(
-        `SELECT role FROM staff WHERE id = ?`,
-        [leave.staff_id]
-      );
+        await db.execute(
+          `UPDATE leave_requests SET status=? WHERE id=?`,
+          [status, requestId]
+        );
 
-      if (staffData.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Staff not found",
-        });
-      }
+        // -------------------- NOTIFICATION --------------------
+        const title = `Leave Request ${status}`;
+        const message = `Your leave request from ${leaveData[0].start_date} to ${leaveData[0].end_date} has been ${status.toLowerCase()} by Admin`;
 
-      const receiverRole = staffData[0].role; // doctor | receptionist
+        const [notifResult] = await db.execute(
+          `INSERT INTO notifications 
+           (sender_role, sender_id, title, message, type)
+           VALUES ('admin', ?, ?, ?, 'request')`,
+          [user.id, title, message]
+        );
 
-      if (!["doctor", "receptionist"].includes(receiverRole)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid receiver role",
-        });
-      }
+        const notificationId = notifResult.insertId;
 
-      // ==============================
-      // CREATE NOTIFICATION
-      // ==============================
-      const title = `Leave Request ${status}`;
-      const message = `Your leave request from ${leave.start_date} to ${leave.end_date} has been ${status.toLowerCase()} by Admin`;
+        await db.execute(
+          `INSERT INTO notification_receivers 
+           (notification_id, receiver_role, receiver_id)
+           VALUES (?, 'staff', ?)`,
+          [notificationId, staffId]
+        );
 
-      const [notifResult] = await db.execute(
-        `INSERT INTO notifications 
-         (admin_id, sender_role, sender_id, title, message, type)
-         VALUES (?, 'admin', ?, ?, ?, 'request')`,
-        [admin.id, admin.id, title, message]
-      );
-
-      const notificationId = notifResult.insertId;
-
-      // ==============================
-      // NOTIFICATION RECEIVER
-      // ==============================
-      await db.execute(
-        `INSERT INTO notification_receivers
-         (notification_id, receiver_role, receiver_id)
-         VALUES (?, ?, ?)`,
-        [notificationId, receiverRole, leave.staff_id]
-      );
-
-      // ==============================
-      // SOCKET NOTIFICATION
-      // ==============================
-      global.io
-        .to(leave.staff_id.toString())
-        .emit("new-notification", {
+        // -------------------- SOCKET --------------------
+        global.io.to(staffId.toString()).emit("new-notification", {
           notificationId,
           title,
           message,
           type: "request",
         });
+      }
 
       return res.status(200).json({
         success: true,
-        message: `Leave request ${status} successfully`,
+        message: `Leave request updated successfully by ${user.role}`,
       });
     } catch (error) {
       console.error("Leave update error:", error);
       return res.status(500).json({
         success: false,
-        message: "Server error",
-        error: error.message,
+        error: "Server error",
+        details: error.message,
       });
     }
   }
 );
-
-
-
 
 
 // DELETE Leave Request (Admin Only) ---------------------------
