@@ -43,9 +43,11 @@ const storage = multer.diskStorage({
   },
 
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `${ext}`);
-  },
+  const ext = path.extname(file.originalname);
+  const baseName = path.basename(file.originalname, ext);
+
+  cb(null, `${baseName}-${Date.now()}${ext}`);
+},
 });
 
 const fileFilter = (req, file, cb) => {
