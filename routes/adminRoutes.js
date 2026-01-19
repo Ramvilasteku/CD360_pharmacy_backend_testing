@@ -44,7 +44,7 @@ const storage = multer.diskStorage({
 
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
-    cb(null, `company_logo${ext}`);
+    cb(null, `${ext}`);
   },
 });
 
