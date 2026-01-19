@@ -511,4 +511,145 @@ router.get(
 );
 
 
+//count available doctor of branch 
+
+router.get(
+  "/available-doctors",
+  authMiddleware,
+  allowRoles("receptionist"),
+  async (req, res) => {
+    try {
+      const staffId = req.user.id;      // receptionist id
+      const adminId = req.user.adminId;
+
+      /* -------------------------------
+         1️⃣ Get receptionist branch
+      -------------------------------- */
+      const [staffRows] = await db.execute(
+        `
+        SELECT branch
+        FROM staff
+        WHERE id = ? AND admin_id = ?
+        `,
+        [staffId, adminId]
+      );
+
+      if (!staffRows.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Receptionist not found",
+        });
+      }
+
+      const branch = staffRows[0].branch;
+
+      /* -------------------------------
+         2️⃣ Get available doctors
+      -------------------------------- */
+      const [doctors] = await db.execute(
+        `
+        SELECT
+          s.id AS doctorId,
+          s.name AS doctorName,
+          s.qualification AS specialization,
+
+          COALESCE(slots.availableSlots, 0) AS availableSlots,
+          COALESCE(appts.todayAppointments, 0) AS todayAppointments
+
+        FROM staff s
+
+        /* Available slots today */
+        LEFT JOIN (
+          SELECT
+            staff_id,
+            COUNT(id) AS availableSlots
+          FROM staff_time_slots
+          WHERE slot_date = CURDATE()
+            AND is_booked = 0
+          GROUP BY staff_id
+        ) slots ON slots.staff_id = s.id
+
+        /* Today's appointments */
+        LEFT JOIN (
+          SELECT
+            staff_id,
+            COUNT(id) AS todayAppointments
+          FROM appointments
+          WHERE appointment_date = CURDATE()
+            AND status IN ('pending','assigned','approved','completed')
+          GROUP BY staff_id
+        ) appts ON appts.staff_id = s.id
+
+        WHERE
+          s.admin_id = ?
+          AND s.role = 'doctor'
+          AND s.branch = ?
+          AND COALESCE(slots.availableSlots, 0) > 0
+
+        LIMIT 3
+        `,
+        [adminId, branch]
+      );
+
+      return res.json({
+        success: true,
+        data: doctors,
+      });
+    } catch (error) {
+      console.error("Available doctors error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
+    }
+  }
+);
+
+/* ======================================================
+   GET STAFF to clients
+====================================================== */
+
+router.get(
+  "/staff/doctors/client",
+  authMiddleware,
+  allowRoles("client"),
+  async (req, res) => {
+    try {
+      const clientId = req.user.id;
+
+      // 1️⃣ Get admin_id linked to this client
+      const [[client]] = await db.execute(
+        "SELECT admin_id FROM clients WHERE id = ?",
+        [clientId]
+      );
+
+      if (!client) {
+        return res.status(404).json({
+          success: false,
+          message: "Client not found",
+        });
+      }
+
+      const adminId = client.admin_id;
+
+      // 2️⃣ Fetch staff using admin_id
+      const [staff] = await db.execute(
+        "SELECT * FROM staff WHERE admin_id = ?",
+        [adminId]
+      );
+
+      res.json({
+        success: true,
+        data: staff,
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
+    }
+  }
+);
+
 module.exports = router;

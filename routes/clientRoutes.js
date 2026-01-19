@@ -462,4 +462,39 @@ router.get(
   }
 );
 
+//count current month clients
+router.get(
+  "/client/count/current-month",
+  authMiddleware,
+  allowRoles("admin", "receptionist"),
+  async (req, res) => {
+    try {
+      const adminId =
+        req.user.role === "admin" ? req.user.id : req.user.adminId;
+
+      const [[result]] = await db.execute(
+        `
+        SELECT COUNT(*) AS total
+        FROM clients
+        WHERE admin_id = ?
+          AND MONTH(created_at) = MONTH(CURDATE())
+          AND YEAR(created_at) = YEAR(CURDATE())
+        `,
+        [adminId]
+      );
+
+      res.json({
+        success: true,
+        currentMonthPatients: result.total,
+      });
+    } catch (error) {
+      console.error("Current month client count error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch current month clients",
+      });
+    }
+  }
+);
+
 module.exports = router;

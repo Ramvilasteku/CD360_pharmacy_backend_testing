@@ -45,7 +45,7 @@ router.get(
           c.mobile AS client_mobile,
           c.address AS client_address,
 
-          ap.selected_branch,
+          ap.selected_branch AS appointment_branch,
           ap.staff_id,
           s.name AS doctor_name
 
@@ -138,7 +138,7 @@ router.get(
         .moveDown(0.3)
         .text(`Doctor Name: ${invoice.doctor_name}`)
         .moveDown(0.3)
-        .text(`Visited Branch : ${invoice.selected_branch} `);
+        .text(`Visited Branch : ${invoice.appointment_branch || "N/A"}`);
 
       /* ===============================
          TABLE HEADER

@@ -175,14 +175,13 @@ router.get(
           s.name AS staff_name,
 
           COUNT(csr.id) AS total_reviews,
-          ROUND(AVG(csr.rating), 1) AS avg_rating,
+          ROUND(AVG(csr.rating), 1) + 0 AS avg_rating,
 
-          SUM(csr.rating = 5) AS rating_5,
-          SUM(csr.rating = 4) AS rating_4,
-          SUM(csr.rating = 3) AS rating_3,
-          SUM(csr.rating = 2) AS rating_2,
-          SUM(csr.rating = 1) AS rating_1
-
+          SUM(csr.rating = 5) +0 AS rating_5,
+          SUM(csr.rating = 4) +0 AS rating_4,
+          SUM(csr.rating = 3) +0 AS rating_3,
+          SUM(csr.rating = 2) +0 AS rating_2,
+          SUM(csr.rating = 1) +0 AS rating_1
         FROM client_staff_reviews csr
         LEFT JOIN staff s ON csr.staff_id = s.id
 

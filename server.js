@@ -29,10 +29,11 @@ const payments = require("./routes/paymentsRoutes.js");
 const notification = require("./routes/notification.js");
 const passwordrepositories = require("./routes/repositories.js");
 const forgotPassword = require("./routes/forgot_password.js");
+const doctorschedule = require("./routes/doctorschedule.js");
 // const taskRoutes = require("./routes/taskRoutes");
 // const businessTypeRoutes = require("./routes/businessType");
 // const complianceTypeRoutes = require("./routes/complianceType");
-// const invoiceRoutes = require("./routes/invoiceRoutes.js");
+const invoiceRoutes = require("./routes/invoiceRoutes.js");
 // const documentRequirements = require("./routes/documentRequirements");
 
 const app = express();
@@ -85,11 +86,12 @@ app.use("/api", documents);
 app.use("/api", payments);
 app.use("/api", notification);
 app.use("/api", forgotPassword);
+app.use("/schedule",doctorschedule);
 // app.use("/api", passwordrepositories);
 // app.use("/api", businessTypeRoutes);
 // app.use("/api", complianceTypeRoutes);
 // app.use("/api", documentRequirements);
-// app.use("/api", invoiceRoutes);
+app.use("/api", invoiceRoutes);
 
 // ---------- START HTTP + WS SERVER ----------
 server.listen(5000, () => {

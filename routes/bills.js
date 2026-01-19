@@ -231,10 +231,7 @@ router.get(
         });
       }
 
-      let where = [
-        "b.id = ?",
-        "b.admin_id = ?"
-      ];
+      let where = ["b.id = ?", "b.admin_id = ?"];
       let params = [billId, adminId];
 
       /* 🔐 CLIENT ACCESS LIMIT */
@@ -282,7 +279,6 @@ router.get(
         success: true,
         bill: rows[0],
       });
-
     } catch (error) {
       console.error("GET BILL BY ID ERROR:", error);
       return res.status(500).json({

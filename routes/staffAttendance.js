@@ -708,4 +708,104 @@ router.put(
 /* ======================================================
 // Attendance Correction Methods Ends  ===================
 ====================================================== */
+
+router.get(
+  "/doctor/attendance-by-date",
+  authMiddleware,
+  allowRoles("receptionist", "admin"),
+  async (req, res) => {
+    try {
+      const { date } = req.query;
+      const role = req.user.role;
+
+      if (!date) {
+        return res.status(400).json({
+          success: false,
+          message: "Date is required",
+        });
+      }
+
+      // 🔑 Correct adminId resolution
+      const adminId =
+        role === "admin" ? req.user.id : req.user.adminId;
+
+      let branchCondition = "";
+      let params = [date, adminId]; // ✅ CORRECT ORDER
+
+      /* ===============================
+         Receptionist → same branch
+      =============================== */
+      if (role === "receptionist") {
+        const [[staff]] = await db.execute(
+          `
+          SELECT branch
+          FROM staff
+          WHERE id = ? AND admin_id = ?
+          `,
+          [req.user.id, adminId]
+        );
+
+        if (!staff?.branch) {
+          return res.status(404).json({
+            success: false,
+            message: "Branch not found",
+          });
+        }
+
+        branchCondition = "AND s.branch = ?";
+        params.push(staff.branch);
+      }
+
+      /* ===============================
+         Doctors attendance list
+      =============================== */
+      const [rows] = await db.execute(
+        `
+        SELECT
+          s.id AS doctorId,
+          s.name AS doctorName,
+          COALESCE(sa.status, 'absent') AS attendanceStatus,
+          sa.clock_in AS clockIn,
+          sa.clock_out AS clockOut
+        FROM staff s
+        LEFT JOIN staff_attendance sa
+          ON sa.staff_id = s.id
+          AND sa.date = ?
+        WHERE s.admin_id = ?
+          AND s.role = 'doctor'
+          ${branchCondition}
+        ORDER BY s.name ASC
+        `,
+        params
+      );
+
+      /* ===============================
+         Summary counts
+      =============================== */
+      const presentCount = rows.filter(
+        (r) => r.attendanceStatus === "present"
+      ).length;
+
+      const absentCount = rows.filter(
+        (r) => r.attendanceStatus === "absent"
+      ).length;
+
+      res.json({
+        success: true,
+        date,
+        summary: {
+          present: presentCount,
+          absent: absentCount,
+        },
+        doctors: rows,
+      });
+    } catch (error) {
+      console.error("Doctor attendance error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch attendance",
+      });
+    }
+  }
+);
 module.exports = router;

@@ -383,4 +383,94 @@ router.delete(
   }
 );
 
+//to get doctors count which are in leave
+router.get(
+  "/doctor/schedule-summary",
+  authMiddleware,
+  allowRoles("receptionist", "admin"),
+  async (req, res) => {
+    try {
+      const role = req.user.role;
+      const adminId =
+        role === "admin" ? req.user.id : req.user.adminId;
+
+      let branchCondition = "";
+      let params = [adminId];
+
+      /* ===============================
+         RECEPTIONIST → SAME BRANCH ONLY
+      =============================== */
+      if (role === "receptionist") {
+        const [[staff]] = await db.execute(
+          `
+          SELECT branch
+          FROM staff
+          WHERE id = ? AND admin_id = ?
+          `,
+          [req.user.id, adminId]
+        );
+
+        if (!staff?.branch) {
+          return res.status(404).json({
+            success: false,
+            message: "Receptionist branch not found",
+          });
+        }
+
+        branchCondition = "AND s.branch = ?";
+        params.push(staff.branch);
+      }
+
+      /* ===============================
+         AVAILABLE DOCTORS
+      =============================== */
+      const [[availableResult]] = await db.execute(
+        `
+        SELECT COUNT(DISTINCT s.id) AS availableDoctors
+        FROM staff s
+        WHERE s.admin_id = ?
+          AND s.role = 'doctor'
+          ${branchCondition}
+          AND s.id NOT IN (
+            SELECT lr.staff_id
+            FROM leave_requests lr
+            WHERE lr.status = 'Approved'
+              AND CURDATE() BETWEEN lr.start_date AND lr.end_date
+          )
+        `,
+        params
+      );
+
+      /* ===============================
+         ON-LEAVE DOCTORS
+      =============================== */
+      const [[leaveResult]] = await db.execute(
+        `
+        SELECT COUNT(DISTINCT s.id) AS onLeaveDoctors
+        FROM staff s
+        JOIN leave_requests lr ON lr.staff_id = s.id
+        WHERE s.admin_id = ?
+          AND s.role = 'doctor'
+          ${branchCondition}
+          AND lr.status = 'Approved'
+          AND CURDATE() BETWEEN lr.start_date AND lr.end_date
+        `,
+        params
+      );
+
+      res.json({
+        success: true,
+        availableDoctors: availableResult.availableDoctors,
+        onLeaveDoctors: leaveResult.onLeaveDoctors,
+      });
+    } catch (error) {
+      console.error("Doctor schedule summary error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch doctor schedule summary",
+      });
+    }
+  }
+);
+
 module.exports = router;

@@ -5,10 +5,10 @@ const db = require("../db");
 
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
+  port: 587,
+  secure: false,
   auth: {
-    user: "villu9812@gmail.com",
+    user: "caredesk360@gmail.com",
     pass: process.env.MAIL_PASS,
   },
 });
@@ -84,7 +84,7 @@ exports.login = async (req, res) => {
 
         // 📧 SEND OTP (THIS IS WHERE OTP IS USED FOR SENDING)
         await transporter.sendMail({
-          from: `"Your App Security" <${process.env.EMAIL_USER}>`,
+          from: `"Caredesk360" <${process.env.EMAIL_USER}>`,
           to: email,
           subject: "Your One-Time Password (OTP) for Login",
           html: `
@@ -113,7 +113,7 @@ exports.login = async (req, res) => {
 
             <p style="margin-top: 32px; font-size: 13px; color: #777;">
               Regards,<br />
-              <strong>Your App Security Team</strong>
+              <strong>Caredesk360</strong>
             </p>
           </div>
 
