@@ -69,25 +69,25 @@ exports.login = async (req, res) => {
     if (!ok) return res.status(401).json({ message: "Invalid credentials" });
 
     // 🔐 GENERATE OTP
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiry = new Date(Date.now() + 10 * 60 * 1000);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
-      await db.query(
-        `INSERT INTO login_otp (user_id, role, otp, otp_expiry)
+    await db.query(
+      `INSERT INTO login_otp (user_id, role, otp, otp_expiry)
      VALUES (?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        otp = VALUES(otp),
        otp_expiry = VALUES(otp_expiry),
        created_at = CURRENT_TIMESTAMP`,
-        [user.id, role, otp, expiry]
-      );
+      [user.id, role, otp, expiry]
+    );
 
-        // 📧 SEND OTP (THIS IS WHERE OTP IS USED FOR SENDING)
-        await transporter.sendMail({
-          from: `"Caredesk360" <${process.env.EMAIL_USER}>`,
-          to: email,
-          subject: "Your One-Time Password (OTP) for Login",
-          html: `
+    // 📧 SEND OTP (THIS IS WHERE OTP IS USED FOR SENDING)
+    await transporter.sendMail({
+      from: `"Caredesk360" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "Your One-Time Password (OTP) for Login",
+      html: `
         <div style="font-family: Arial, Helvetica, sans-serif; background-color: #f5f7fa; padding: 24px;">
           <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; padding: 24px; border-radius: 6px; box-shadow: 0 2px 6px #1a73e86f;">
 
@@ -122,7 +122,7 @@ exports.login = async (req, res) => {
           </p>
         </div>
       `,
-        });
+    });
 
     // 🔑 JWT (OTP NOT VERIFIED YET)
     const payload = {
@@ -191,10 +191,11 @@ exports.verifyOtp = async (req, res) => {
 
     res.cookie("token", newToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      secure: true,          // REQUIRED on HTTPS
+      sameSite: "None",      // 🔑 CRITICAL
       maxAge: 24 * 60 * 60 * 1000,
     });
+
 
     return res.json({
       message: "OTP verified successfully",
@@ -213,6 +214,11 @@ exports.verifyOtp = async (req, res) => {
 
 /* ===================== LOGOUT ===================== */
 exports.logout = (req, res) => {
-  res.clearCookie("token", { httpOnly: true, sameSite: "strict" });
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+  });
+
   return res.json({ message: "Logged out successfully" });
 };

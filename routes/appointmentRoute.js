@@ -668,8 +668,6 @@ router.get(
   }
 );
 
-
-
 // ===================== CANCEL APPOINTMENT =====================
 router.put(
   "/client/appointment/cancel",
