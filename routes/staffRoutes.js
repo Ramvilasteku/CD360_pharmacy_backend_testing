@@ -316,73 +316,73 @@ router.put(
    UPDATE STAFF PROFILE (WITH PHOTO)
 ====================================================== */
 
-// router.put(
-//   "/staff/self/edit",
-//   authMiddleware,
-//   allowRoles("doctor", "receptionist"),
-//   uploadStaffPhoto.single("profile_photo"),
-//   async (req, res) => {
-//     try {
-//       const staffId = req.user.id;       // from cookie
-//       const adminId = req.user.adminId; // from cookie
+router.put(
+  "/staff/self/edit",
+  authMiddleware,
+  allowRoles("doctor", "receptionist"),
+  uploadStaffPhoto.single("profile_photo"),
+  async (req, res) => {
+    try {
+      const staffId = req.user.id;       // from cookie
+      const adminId = req.user.adminId; // from cookie
 
-//       /* ✅ Verify staff exists under same admin */
-//       const [rows] = await db.execute(
-//         "SELECT * FROM staff WHERE id = ? AND admin_id = ?",
-//         [staffId, adminId]
-//       );
+      /* ✅ Verify staff exists under same admin */
+      const [rows] = await db.execute(
+        "SELECT * FROM staff WHERE id = ? AND admin_id = ?",
+        [staffId, adminId]
+      );
 
-//       if (!rows.length) {
-//         return res.status(404).json({
-//           message: "Staff not found or unauthorized",
-//         });
-//       }
+      if (!rows.length) {
+        return res.status(404).json({
+          message: "Staff not found or unauthorized",
+        });
+      }
 
-//       const staff = rows[0];
+      const staff = rows[0];
 
-//       /* ✅ Handle profile photo */
-//       const photoPath = req.file
-//         ? `companies/admin_${adminId}/staff/staff_${staffId}/profile_photo/${req.file.filename}`
-//         : staff.profile_photo;
+      /* ✅ Handle profile photo */
+      const photoPath = req.file
+        ? `companies/admin_${adminId}/staff/staff_${staffId}/profile_photo/${req.file.filename}`
+        : staff.profile_photo;
 
-//       /* ✅ Update allowed fields ONLY */
-//       await db.execute(
-//         `
-//         UPDATE staff SET
-//           name = ?,
-//           mobile = ?,
-//           address = ?,
-//           branch = ?,
-//           qualification = ?,
-//           profile_photo = ?
-//         WHERE id = ? AND admin_id = ?
-//         `,
-//         [
-//           req.body.name || staff.name,
-//           req.body.mobile || staff.mobile,
-//           req.body.address || staff.address,
-//           req.body.branch || staff.branch,
-//           req.body.qualification || staff.qualification,
-//           photoPath,
-//           staffId,
-//           adminId,
-//         ]
-//       );
+      /* ✅ Update allowed fields ONLY */
+      await db.execute(
+        `
+        UPDATE staff SET
+          name = ?,
+          mobile = ?,
+          address = ?,
+          branch = ?,
+          qualification = ?,
+          profile_photo = ?
+        WHERE id = ? AND admin_id = ?
+        `,
+        [
+          req.body.name || staff.name,
+          req.body.mobile || staff.mobile,
+          req.body.address || staff.address,
+          req.body.branch || staff.branch,
+          req.body.qualification || staff.qualification,
+          photoPath,
+          staffId,
+          adminId,
+        ]
+      );
 
-//       res.json({
-//         success: true,
-//         message: "Profile updated successfully",
-//         profile_photo: photoPath,
-//         image_url: photoPath
-//           ? `${req.protocol}://${req.get("host")}/Images/${photoPath}`
-//           : null,
-//       });
-//     } catch (error) {
-//       console.error("STAFF SELF UPDATE ERROR:", error);
-//       res.status(500).json({ error: "Server error" });
-//     }
-//   }
-// );
+      res.json({
+        success: true,
+        message: "Profile updated successfully",
+        profile_photo: photoPath,
+        image_url: photoPath
+          ? `${req.protocol}://${req.get("host")}/Images/${photoPath}`
+          : null,
+      });
+    } catch (error) {
+      console.error("STAFF SELF UPDATE ERROR:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
 
 /* ======================================================
    GET STAFF (ADMIN WISE)
