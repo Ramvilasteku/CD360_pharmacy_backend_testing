@@ -24,12 +24,17 @@ function generateAdminId() {
 /* -----------------------------
    MULTER CONFIG (COMPANY LOGO)
 ------------------------------ */
-const BASE_UPLOAD_DIR = path.join(__dirname, "..", "images", "companies");
+const BASE_UPLOAD_DIR = path.join(__dirname, "..", "Images", "companies");
+fs.mkdirSync(BASE_UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
+    console.log("MULTER DESTINATION HIT");
+
     const adminId = req.generatedAdminId;
-    if (!adminId) return cb(new Error("Admin ID not generated"), null);
+    if (!adminId) {
+      return cb(new Error("Admin ID not generated"), null);
+    }
 
     const uploadPath = path.join(
       BASE_UPLOAD_DIR,
@@ -43,11 +48,12 @@ const storage = multer.diskStorage({
   },
 
   filename: (req, file, cb) => {
-  const ext = path.extname(file.originalname);
-  const baseName = path.basename(file.originalname, ext);
+    console.log("MULTER FILENAME:", file.originalname); // 🔍 debug
 
-  cb(null, `${baseName}-${Date.now()}${ext}`);
-},
+    const ext = path.extname(file.originalname);
+    const baseName = path.basename(file.originalname, ext);
+    cb(null, `${baseName}-${Date.now()}${ext}`);
+  },
 });
 
 const fileFilter = (req, file, cb) => {
@@ -63,6 +69,8 @@ const uploadCompanyLogo = multer({
   fileFilter,
   limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
 });
+
+
 
 /* ======================================================
    CREATE NEW ADMIN (WITH COMPANY LOGO)
@@ -190,6 +198,79 @@ router.get(
 /* ======================================================
    UPDATE ADMIN (WITH LOGO CHANGE HERE)
 ====================================================== */
+// router.put(
+//   "/admin/update/:id",
+//   (req, res, next) => {
+//     // reuse admin id for folder path
+//     req.generatedAdminId = req.params.id;
+//     next();
+//   },
+//   uploadCompanyLogo.single("company_logo"),
+//   async (req, res) => {
+//     try {
+//       const { id } = req.params;
+//       const { name, email, mobile, address, status, company_name } = req.body;
+
+//       console.log("REQ.FILE =>", req.file);
+//       console.log("REQ.BODY =>", req.body);
+
+
+//       // Check admin exists
+//       const [existing] = await db.execute("SELECT * FROM admins WHERE id = ?", [
+//         id,
+//       ]);
+
+//       if (!existing.length) {
+//         return res.status(404).json({
+//           success: false,
+//           message: "Admin not found",
+//         });
+//       }
+
+//       // If new logo uploaded → update path, else keep old
+//       const companyLogoPath = req.file
+//         ? `companies/admin_${id}/admin/logo/${req.file.filename}`
+//         : existing[0].company_logo;
+
+//       await db.execute(
+//         `
+//         UPDATE admins
+//         SET 
+//           name = ?,
+//           email = ?,
+//           mobile = ?,
+//           address = ?,
+//           status = ?,
+//           company_name = ?,
+//           company_logo = ?
+//         WHERE id = ?
+//         `,
+//         [
+//           name || existing[0].name,
+//           email || existing[0].email,
+//           mobile || existing[0].mobile,
+//           address || existing[0].address,
+//           status ?? existing[0].status,
+//           company_name || existing[0].company_name,
+//           companyLogoPath,
+//           id,
+//         ]
+//       );
+
+//       return res.status(200).json({
+//         success: true,
+//         message: "Admin updated successfully",
+//         company_logo: companyLogoPath,
+//       });
+//     } catch (error) {
+//       console.error("UPDATE ADMIN ERROR:", error);
+//       return res.status(500).json({
+//         success: false,
+//         error: "Server error",
+//       });
+//     }
+//   }
+// );
 router.put(
   "/admin/update/:id",
   (req, res, next) => {
@@ -200,12 +281,12 @@ router.put(
   uploadCompanyLogo.single("company_logo"),
   async (req, res) => {
     try {
-      const { id } = req.params;
       const { name, email, mobile, address, status, company_name } = req.body;
+      const adminId = req.params.id;
 
       // Check admin exists
       const [existing] = await db.execute("SELECT * FROM admins WHERE id = ?", [
-        id,
+        adminId,
       ]);
 
       if (!existing.length) {
@@ -217,7 +298,7 @@ router.put(
 
       // If new logo uploaded → update path, else keep old
       const companyLogoPath = req.file
-        ? `companies/admin_${id}/admin/logo/${req.file.filename}`
+        ? `companies/admin_${adminId}/admin/logo/${req.file.filename}`
         : existing[0].company_logo;
 
       await db.execute(
@@ -241,7 +322,7 @@ router.put(
           status ?? existing[0].status,
           company_name || existing[0].company_name,
           companyLogoPath,
-          id,
+          adminId,
         ]
       );
 
