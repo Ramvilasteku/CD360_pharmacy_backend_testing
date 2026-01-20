@@ -8,6 +8,8 @@ const db = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
+  // ✅ FORCE IST FOR ALL QUERIES
+  timezone: "+05:30",
   dateStrings: ["DATE"],
 });
 
@@ -21,5 +23,6 @@ const db = mysql.createPool({
 //   queueLimit: 0,
 //   dateStrings: ["DATE"],
 // });
+
 
 module.exports = db;
