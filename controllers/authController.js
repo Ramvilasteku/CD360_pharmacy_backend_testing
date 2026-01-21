@@ -186,12 +186,6 @@ exports.verifyOtp = async (req, res) => {
     };
     if (role !== "admin") payload.adminId = adminId;
 
-    if (!req.user?.otpVerified) {
-      return res.status(403).json({
-        message: "OTP verification required",
-      });
-    }
-
     const newToken = jwt.sign(payload, process.env.JWT_SECRET, {
       expiresIn: "1d",
     });
