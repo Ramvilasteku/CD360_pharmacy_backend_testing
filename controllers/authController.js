@@ -139,8 +139,8 @@ exports.login = async (req, res) => {
 
     res.cookie("token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      secure: true, // REQUIRED on HTTPS
+      sameSite: "None",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
@@ -211,6 +211,25 @@ exports.verifyOtp = async (req, res) => {
   } catch (err) {
     console.error("OTP Verify Error:", err);
     return res.status(500).json({ message: "OTP verification failed" });
+  }
+};
+
+
+/* ===================== LOGIN AUTH MIDDLEWARE ===================== */
+
+exports.loginAuth = (req, res, next) => {
+  const token = req.cookies?.token;
+
+  if (!token) {
+    return res.status(401).json({ message: "Authentication required" });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; // otpVerified may be false here
+    next();
+  } catch {
+    return res.status(401).json({ message: "Invalid token" });
   }
 };
 

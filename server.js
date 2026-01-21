@@ -62,7 +62,7 @@ initializeSocket(server); // handles socket connection
 
 // ---------- PUBLIC ROUTES ----------
 app.post("/login", authController.login);
-app.post("/verify-otp", authMiddleware, authController.verifyOtp);
+app.post("/verify-otp", authController.loginAuth, authController.verifyOtp);
 app.post("/logout", authController.logout);
 app;
 // Test Route
