@@ -226,7 +226,10 @@ router.put(
   authMiddleware,
   allowRoles("admin", "doctor", "receptionist"),
   async (req, res) => {
+    const conn = await db.getConnection();
     try {
+      await conn.beginTransaction();
+
       const user = req.user;
       const requestId = req.params.id;
       const { leave_type, start_date, end_date, reason, status } = req.body;
@@ -235,7 +238,7 @@ router.put(
       // DOCTOR / RECEPTIONIST: edit ONLY their own PENDING leave
       // =====================================================
       if (user.role === "doctor" || user.role === "receptionist") {
-        const [data] = await db.execute(
+        const [data] = await conn.execute(
           `SELECT * FROM leave_requests WHERE id = ? AND staff_id = ?`,
           [requestId, user.id]
         );
@@ -254,7 +257,8 @@ router.put(
           });
         }
 
-        await db.execute(
+        // Update the leave request
+        await conn.execute(
           `UPDATE leave_requests 
            SET leave_type=?, start_date=?, end_date=?, reason=?
            WHERE id=?`,
@@ -266,6 +270,41 @@ router.put(
             requestId,
           ]
         );
+
+        // -------------------- NOTIFY ADMIN(S) --------------------
+        const title = `Leave Request Updated`;
+        const message = `${user.role} ${user.name} updated their leave from ${data[0].start_date} to ${data[0].end_date}`;
+
+        // Get all admins (or specific admin_id if available)
+        const [admins] = await conn.execute(`SELECT id FROM admins `);
+
+        for (const admin of admins) {
+          const [notifResult] = await conn.execute(
+            `INSERT INTO notifications 
+             (admin_id, sender_role, title, message, type)
+             VALUES (?, ?, ?, ?, 'request')`,
+            [user.id, user.role, title, message]
+          );
+
+          const notificationId = notifResult.insertId;
+
+          await conn.execute(
+            `INSERT INTO notification_receivers 
+             (notification_id, receiver_role, receiver_id)
+             VALUES (?, 'admin', ?)`,
+            [notificationId, admin.id]
+          );
+
+          // SOCKET.IO EMIT
+          if (global.io) {
+            global.io.to(admin.id.toString()).emit("new-notification", {
+              notificationId,
+              title,
+              message,
+              type: "request",
+            });
+          }
+        }
       }
 
       // ======================================
@@ -279,8 +318,10 @@ router.put(
           });
         }
 
-        const [leaveData] = await db.execute(
-          `SELECT * FROM leave_requests WHERE id = ?`,
+        // 1️⃣ Get leave request
+        const [leaveData] = await conn.execute(
+          `SELECT staff_id, start_date, end_date 
+           FROM leave_requests WHERE id = ?`,
           [requestId]
         );
 
@@ -291,53 +332,81 @@ router.put(
           });
         }
 
-        const staffId = leaveData[0].staff_id;
+        const { staff_id, start_date: leaveStart, end_date: leaveEnd } = leaveData[0];
 
-        await db.execute(
-          `UPDATE leave_requests SET status=? WHERE id=?`,
-          [status, requestId]
+        // 2️⃣ Get staff role
+        const [staffData] = await conn.execute(
+          `SELECT role, name FROM staff WHERE id = ?`,
+          [staff_id]
         );
 
-        // -------------------- NOTIFICATION --------------------
-        const title = `Leave Request ${status}`;
-        const message = `Your leave request from ${leaveData[0].start_date} to ${leaveData[0].end_date} has been ${status.toLowerCase()} by Admin`;
+        if (staffData.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: "Staff not found",
+          });
+        }
 
-        const [notifResult] = await db.execute(
+        const receiverRole = staffData[0].role;
+        const staffName = staffData[0].name;
+
+        if (!["doctor", "receptionist"].includes(receiverRole)) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid staff role for notification",
+          });
+        }
+
+        // 3️⃣ Update leave status
+        await conn.execute(`UPDATE leave_requests SET status=? WHERE id=?`, [status, requestId]);
+
+        // -------------------- NOTIFY STAFF --------------------
+        const title = `Leave Request ${status}`;
+        const message = `Your leave request from ${leaveStart} to ${leaveEnd} has been ${status.toLowerCase()} by Admin`;
+
+        const [notifResult] = await conn.execute(
           `INSERT INTO notifications 
-           (sender_role, sender_id, title, message, type)
-           VALUES ('admin', ?, ?, ?, 'request')`,
+           (admin_id, sender_role, title, message, type)
+           VALUES (?, 'admin', ?, ?, 'request')`,
           [user.id, title, message]
         );
 
         const notificationId = notifResult.insertId;
 
-        await db.execute(
+        await conn.execute(
           `INSERT INTO notification_receivers 
            (notification_id, receiver_role, receiver_id)
-           VALUES (?, 'staff', ?)`,
-          [notificationId, staffId]
+           VALUES (?, ?, ?)`,
+          [notificationId, receiverRole, staff_id]
         );
 
-        // -------------------- SOCKET --------------------
-        global.io.to(staffId.toString()).emit("new-notification", {
-          notificationId,
-          title,
-          message,
-          type: "request",
-        });
+        // SOCKET.IO EMIT to the staff
+        if (global.io) {
+          global.io.to(staff_id.toString()).emit("new-notification", {
+            notificationId,
+            title,
+            message,
+            type: "request",
+          });
+        }
       }
+
+      await conn.commit();
 
       return res.status(200).json({
         success: true,
         message: `Leave request updated successfully by ${user.role}`,
       });
     } catch (error) {
+      await conn.rollback();
       console.error("Leave update error:", error);
       return res.status(500).json({
         success: false,
         error: "Server error",
         details: error.message,
       });
+    } finally {
+      conn.release();
     }
   }
 );

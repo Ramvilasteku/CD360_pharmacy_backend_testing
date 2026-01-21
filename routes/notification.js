@@ -68,5 +68,67 @@ router.post(
   }
 );
 
+router.patch(
+  "/notifications/:notificationId/read",
+  authMiddleware,
+  allowRoles("admin", "receptionist", "doctor", "client", "staff"),
+  async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+      const { notificationId } = req.params;
+      const { id: userId, role } = req.user;
+
+      await conn.beginTransaction();
+
+      // 1️⃣ Delete notification ONLY for this user
+      const [result] = await conn.execute(
+        `DELETE FROM notification_receivers
+         WHERE notification_id = ?
+           AND receiver_id = ?
+           AND receiver_role = ?`,
+        [notificationId, userId, role]
+      );
+
+      if (result.affectedRows === 0) {
+        await conn.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Notification not found"
+        });
+      }
+
+      // 2️⃣ Check if anyone else still has this notification
+      const [[countRow]] = await conn.execute(
+        `SELECT COUNT(*) AS count
+         FROM notification_receivers
+         WHERE notification_id = ?`,
+        [notificationId]
+      );
+
+      // 3️⃣ If no receivers left → delete main notification
+      if (countRow.count === 0) {
+        await conn.execute(
+          `DELETE FROM notifications WHERE id = ?`,
+          [notificationId]
+        );
+      }
+
+      await conn.commit();
+
+      res.json({
+        success: true,
+        message: "Notification removed"
+      });
+
+    } catch (err) {
+      await conn.rollback();
+      console.error("Delete notification error:", err);
+      res.status(500).json({ success: false });
+    } finally {
+      conn.release();
+    }
+  }
+);
+
 
 module.exports = router;

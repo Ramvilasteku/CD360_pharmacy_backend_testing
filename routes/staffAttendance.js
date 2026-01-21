@@ -333,45 +333,79 @@ router.put(
   authMiddleware,
   allowRoles("admin"),
   async (req, res) => {
+    const conn = await db.getConnection();
+
     try {
-      const admin_id = req.user.id;
+      const adminId = req.user.id;
       const attendanceId = req.params.id;
       const { clock_in, clock_out } = req.body;
 
-      // Check if the attendance exists and belongs to this admin (or admin themselves)
-      const [check] = await db.execute(
-        "SELECT * FROM staff_attendance WHERE id=? AND (admin_id=? OR (admin_id IS NULL AND staff_id=?))",
-        [attendanceId, admin_id, admin_id]
+      await conn.beginTransaction();
+
+      /* ======================================================
+         1️⃣ GET ATTENDANCE + STAFF INFO
+      ====================================================== */
+      const [[row]] = await conn.execute(
+        `
+        SELECT 
+          sa.id,
+          sa.staff_id,
+          sa.date,
+          s.role
+        FROM staff_attendance sa
+        JOIN staff s ON s.id = sa.staff_id
+        WHERE sa.id = ? AND s.admin_id = ?
+        `,
+        [attendanceId, adminId]
       );
 
-      if (!check.length) {
+      if (!row) {
+        await conn.rollback();
         return res.status(404).json({
           success: false,
-          message: "Attendance record not found or no permission",
+          message: "Attendance record not found",
         });
       }
 
-      // Update record and calculate total_hours and status directly in SQL
-      await db.execute(
+      const { staff_id, date, role: staffRole } = row; // doctor | receptionist
+
+      /* ======================================================
+         2️⃣ UPDATE ATTENDANCE
+      ====================================================== */
+      await conn.execute(
         `
         UPDATE staff_attendance
         SET 
           clock_in = ?,
           clock_out = ?,
-          total_hours = CASE 
-                          WHEN ? IS NOT NULL AND ? IS NOT NULL 
-                          THEN TIMESTAMPDIFF(MINUTE, CONCAT(date,' ',?), CONCAT(date,' ',?))/60
-                          ELSE 0
-                        END,
-          status = CASE 
-                      WHEN ? IS NOT NULL AND ? IS NOT NULL THEN
-                        CASE 
-                          WHEN TIMESTAMPDIFF(MINUTE, CONCAT(date,' ',?), CONCAT(date,' ',?))/60 >= 6 THEN 'present'
-                          WHEN TIMESTAMPDIFF(MINUTE, CONCAT(date,' ',?), CONCAT(date,' ',?))/60 >= 4 THEN 'half_day'
-                          ELSE 'absent'
-                        END
-                      ELSE 'absent'
-                   END
+          total_hours =
+            CASE
+              WHEN ? IS NOT NULL AND ? IS NOT NULL
+              THEN TIMESTAMPDIFF(
+                     MINUTE,
+                     CONCAT(date,' ',?),
+                     CONCAT(date,' ',?)
+                   ) / 60
+              ELSE total_hours
+            END,
+          status =
+            CASE
+              WHEN ? IS NOT NULL AND ? IS NOT NULL THEN
+                CASE
+                  WHEN TIMESTAMPDIFF(
+                         MINUTE,
+                         CONCAT(date,' ',?),
+                         CONCAT(date,' ',?)
+                       ) / 60 >= 6 THEN 'present'
+                  WHEN TIMESTAMPDIFF(
+                         MINUTE,
+                         CONCAT(date,' ',?),
+                         CONCAT(date,' ',?)
+                       ) / 60 >= 4 THEN 'half_day'
+                  ELSE 'absent'
+                END
+              ELSE status
+            END
         WHERE id = ?
         `,
         [
@@ -391,18 +425,72 @@ router.put(
         ]
       );
 
-      res.status(200).json({
+      /* ======================================================
+         3️⃣ CREATE NOTIFICATION (ADMIN → STAFF)
+      ====================================================== */
+      const title = "Attendance Updated";
+      const message = `Your attendance for ${date} has been updated by admin`;
+
+      const [notifResult] = await conn.execute(
+        `
+        INSERT INTO notifications
+          (admin_id, sender_role, title, message, type)
+        VALUES
+          (?, 'admin', ?, ?, 'attendance')
+        `,
+        [adminId, title, message]
+      );
+
+      const notificationId = notifResult.insertId;
+
+      /* ======================================================
+         4️⃣ MAP RECEIVER (doctor / receptionist ONLY)
+      ====================================================== */
+      await conn.execute(
+        `
+        INSERT INTO notification_receivers
+          (notification_id, receiver_role, receiver_id)
+        VALUES
+          (?, ?, ?)
+        `,
+        [notificationId, staffRole, staff_id]
+      );
+
+      await conn.commit();
+
+      /* ======================================================
+         5️⃣ SOCKET NOTIFICATION (MATCH DASHBOARD ROOM)
+      ====================================================== */
+      if (global.io) {
+        global.io
+          .to(`${staffRole}_${staff_id}`) // doctor_12 / receptionist_7
+          .emit("new-notification", {
+            id: notificationId,
+            title,
+            message,
+            type: "attendance",
+          });
+      }
+
+      return res.json({
         success: true,
-        message: "Attendance record updated successfully",
+        message: "Attendance updated and notification sent",
       });
+
     } catch (error) {
-      res.status(500).json({
+      await conn.rollback();
+      console.error("Attendance update error:", error);
+      return res.status(500).json({
         success: false,
-        message: error.message,
+        message: "Internal server error",
       });
+    } finally {
+      conn.release();
     }
   }
 );
+
+
 
 /* ======================================================
 // DELETE Attendance by Staff or Admin by attendance ID
@@ -609,10 +697,11 @@ router.put(
   authMiddleware,
   allowRoles("admin"),
   async (req, res) => {
+    const conn = await db.getConnection();
+
     try {
       const adminId = req.user.id;
-      const notification_id = req.params.notification_id;
-
+      const { notification_id } = req.params;
       const { staff_id, date, clock_in, clock_out } = req.body;
 
       if (!staff_id || !date) {
@@ -622,24 +711,44 @@ router.put(
         });
       }
 
-      // Check attendance exists for the date
-      const [rows] = await db.execute(
-        `SELECT * FROM staff_attendance
+      await conn.beginTransaction();
+
+      /* ======================================================
+         1️⃣ VERIFY STAFF & GET ROLE
+      ====================================================== */
+      const [[staff]] = await conn.execute(
+        `SELECT id, role FROM staff WHERE id = ? AND admin_id = ?`,
+        [staff_id, adminId]
+      );
+
+      if (!staff) {
+        await conn.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Staff not found",
+        });
+      }
+
+      const staffRole = staff.role; // ✅ doctor | receptionist
+
+      /* ======================================================
+         2️⃣ INSERT / UPDATE ATTENDANCE
+      ====================================================== */
+      const [existing] = await conn.execute(
+        `SELECT id FROM staff_attendance
          WHERE staff_id = ? AND date = ?`,
         [staff_id, date]
       );
 
-      if (rows.length === 0) {
-        // INSERT NEW ATTENDANCE IF NOT EXISTS
-        await db.execute(
-          `INSERT INTO staff_attendance 
-            (admin_id, staff_id, date, clock_in, clock_out)
+      if (existing.length === 0) {
+        await conn.execute(
+          `INSERT INTO staff_attendance
+           (admin_id, staff_id, date, clock_in, clock_out)
            VALUES (?, ?, ?, ?, ?)`,
           [adminId, staff_id, date, clock_in || null, clock_out || null]
         );
       } else {
-        // UPDATE EXISTING ATTENDANCE
-        await db.execute(
+        await conn.execute(
           `UPDATE staff_attendance
            SET clock_in = ?, clock_out = ?
            WHERE staff_id = ? AND date = ?`,
@@ -647,63 +756,113 @@ router.put(
         );
       }
 
-      // RECALCULATE TOTAL HOURS + STATUS
-      await db.execute(
+      /* ======================================================
+         3️⃣ CALCULATE HOURS & STATUS
+      ====================================================== */
+      await conn.execute(
         `
         UPDATE staff_attendance
-        SET 
-          total_hours = 
-            CASE 
-              WHEN clock_in IS NOT NULL AND clock_out IS NOT NULL 
-              THEN TIMESTAMPDIFF(MINUTE, clock_in, clock_out)/60
+        SET
+          total_hours =
+            CASE
+              WHEN clock_in IS NOT NULL AND clock_out IS NOT NULL
+              THEN TIMESTAMPDIFF(MINUTE, clock_in, clock_out) / 60
               ELSE total_hours
             END,
-
-          status = (
+          status =
             CASE
               WHEN clock_in IS NULL OR clock_out IS NULL THEN status
-              WHEN TIMESTAMPDIFF(MINUTE, clock_in, clock_out)/60 >= 6 THEN 'present'
-              WHEN TIMESTAMPDIFF(MINUTE, clock_in, clock_out)/60 >= 4 THEN 'half_day'
+              WHEN TIMESTAMPDIFF(MINUTE, clock_in, clock_out) / 60 >= 6 THEN 'present'
+              WHEN TIMESTAMPDIFF(MINUTE, clock_in, clock_out) / 60 >= 4 THEN 'half_day'
               ELSE 'absent'
             END
-          )
         WHERE staff_id = ? AND date = ?
         `,
         [staff_id, date]
       );
 
-      // MARK REQUEST AS READ
-      await db.execute(
-        `UPDATE notification_receivers
-         SET is_read = 1, read_at = NOW()
-         WHERE notification_id = ? AND receiver_role = 'admin'`,
+      /* ======================================================
+         4️⃣ REMOVE ADMIN REQUEST NOTIFICATION
+      ====================================================== */
+      await conn.execute(
+        `DELETE FROM notification_receivers
+         WHERE notification_id = ?
+           AND receiver_role = 'admin'
+           AND receiver_id = ?`,
+        [notification_id, adminId]
+      );
+
+      const [[remaining]] = await conn.execute(
+        `SELECT COUNT(*) AS total
+         FROM notification_receivers
+         WHERE notification_id = ?`,
         [notification_id]
       );
 
-      // SEND SOCKET NOTIFICATION TO STAFF
-      io.to("staff_" + staff_id).emit("attendance-request-updated", {
-        staff_id,
-        date,
-        clock_in,
-        clock_out,
-        message: "Your attendance update has been approved",
+      if (remaining.total === 0) {
+        await conn.execute(
+          `DELETE FROM notifications WHERE id = ?`,
+          [notification_id]
+        );
+      }
+
+      /* ======================================================
+         5️⃣ CREATE STAFF NOTIFICATION (FIXED)
+      ====================================================== */
+      const title = "Attendance Approved";
+      const message = `Your attendance for ${date} has been approved`;
+
+      const [notif] = await conn.execute(
+        `INSERT INTO notifications
+         (admin_id, sender_role, title, message, type)
+         VALUES (?, 'admin', ?, ?, 'attendance')`,
+        [adminId, title, message]
+      );
+
+      const newNotificationId = notif.insertId;
+
+      // ✅ IMPORTANT FIX HERE
+      await conn.execute(
+        `INSERT INTO notification_receivers
+         (notification_id, receiver_role, receiver_id)
+         VALUES (?, ?, ?)`,
+        [newNotificationId, staffRole, staff_id]
+      );
+
+      await conn.commit();
+
+      /* ======================================================
+         6️⃣ SOCKET NOTIFICATION
+      ====================================================== */
+      if (global.io) {
+        global.io
+          .to(`${staffRole}_${staff_id}`)
+          .emit("new-notification", {
+            notification_id: newNotificationId,
+            title,
+            message,
+            type: "attendance",
+          });
+      }
+
+      return res.json({
+        success: true,
+        message: "Attendance updated and staff notified",
       });
 
-      return res.status(200).json({
-        success: true,
-        message: "Attendance updated successfully",
-      });
     } catch (error) {
+      await conn.rollback();
+      console.error("Attendance update error:", error);
       return res.status(500).json({
         success: false,
-        error: error.message,
-        success: false,
-        error: error.message,
-        error,
+        message: "Internal server error",
       });
+    } finally {
+      conn.release();
     }
   }
 );
+
 
 /* ======================================================
 // Attendance Correction Methods Ends  ===================

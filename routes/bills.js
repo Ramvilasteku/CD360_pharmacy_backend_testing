@@ -299,9 +299,13 @@ router.put(
   authMiddleware,
   allowRoles("admin", "receptionist"),
   async (req, res) => {
+    const connection = await db.getConnection();
     try {
+      await connection.beginTransaction();
+
       const bill_id = Number(req.params.bill_id);
       const adminId = resolveAdminId(req.user);
+      const senderRole = req.user.role; // 'admin' or 'receptionist'
 
       let { subtotal, tax, total_amount, bill_status, notes } = req.body;
 
@@ -311,17 +315,20 @@ router.put(
       bill_status = normalizeString(bill_status);
       notes = normalizeString(notes);
 
-      const [exists] = await db.query(
-        `SELECT id FROM bills WHERE id=? AND admin_id=?`,
+      const [billRows] = await connection.query(
+        `SELECT id, client_id FROM bills WHERE id=? AND admin_id=?`,
         [bill_id, adminId]
       );
 
-      if (!exists.length) {
+      if (!billRows.length) {
+        await connection.rollback();
         return res.status(404).json({
           success: false,
           message: "Bill not found"
         });
       }
+
+      const clientId = billRows[0].client_id;
 
       const fields = [];
       const params = [];
@@ -333,7 +340,11 @@ router.put(
       if (bill_status) {
         const allowed = ["Pending", "Paid", "Overdue", "Cancelled"];
         if (!allowed.includes(bill_status)) {
-          return res.status(400).json({ success: false, message: "Invalid bill status" });
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: "Invalid bill status"
+          });
         }
         fields.push("bill_status=?");
         params.push(bill_status);
@@ -345,13 +356,15 @@ router.put(
       }
 
       if (!fields.length) {
+        await connection.rollback();
         return res.status(400).json({
           success: false,
           message: "No fields provided to update"
         });
       }
 
-      await db.query(
+      // ✅ Update bill
+      await connection.query(
         `
         UPDATE bills
         SET ${fields.join(", ")}
@@ -360,15 +373,57 @@ router.put(
         [...params, bill_id, adminId]
       );
 
+      // ✅ Create notification
+      const title = "Bill Updated";
+      const message = `Your bill #${bill_id} has been updated. Please review the changes.`;
+
+      const [notificationResult] = await connection.query(
+        `
+        INSERT INTO notifications (admin_id, sender_role, title, message, type)
+        VALUES (?, ?, ?, ?, 'billing')
+        `,
+        [adminId, senderRole, title, message]
+      );
+
+      const notificationId = notificationResult.insertId;
+
+      // ✅ Assign notification to client
+      await connection.query(
+        `
+        INSERT INTO notification_receivers
+        (notification_id, receiver_role, receiver_id)
+        VALUES (?, 'client', ?)
+        `,
+        [notificationId, clientId]
+      );
+
+     await connection.commit();
+
+     global.io
+      .to(clientId.toString())
+      .emit("new-notification", {
+        title: "Bill Updated",
+        message: `Your bill #${bill_id} has been updated.`,
+        type: "billing",
+        bill_id,
+      });
+
+
       res.json({
         success: true,
-        message: "Bill updated successfully",
+        message: "Bill updated successfully and client notified",
         bill_id
       });
 
     } catch (error) {
+      await connection.rollback();
       console.error("UPDATE BILL ERROR:", error);
-      res.status(500).json({ success: false, message: "Internal server error" });
+      res.status(500).json({
+        success: false,
+        message: "Internal server error"
+      });
+    } finally {
+      connection.release();
     }
   }
 );

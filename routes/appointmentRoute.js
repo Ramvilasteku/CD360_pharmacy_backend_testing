@@ -697,9 +697,29 @@ router.put(
 
       const appointment = rows[0];
 
-      await db.query(`UPDATE appointments SET status='cancelled' WHERE id=?`, [
-        appointmentId,
-      ]);
+      // ❗ UPDATED: also set is_booked = 0
+      await db.query(
+        `UPDATE appointments 
+         SET status='cancelled', is_booked = 0 
+         WHERE id=?`,
+        [appointmentId]
+      );
+
+      // ❗ NEW: free staff time slot
+      await db.query(
+        `UPDATE staff_time_slots
+         SET is_booked = 0
+         WHERE staff_id = ?
+           AND slot_date = ?
+           AND slot_time_from = ?
+           AND slot_time_to = ?`,
+        [
+          appointment.staff_id,
+          appointment.appointment_date,
+          appointment.from_time,
+          appointment.to_time,
+        ]
+      );
 
       // Notification
       const title = "Appointment Cancelled";
@@ -1042,9 +1062,10 @@ router.put(
       );
 
       /* ===============================
-         🔓 FREE SLOT IF CANCELLED
+         🔓 FREE SLOT + UPDATE is_booked IF CANCELLED
       =============================== */
       if (status === "cancelled") {
+        // ✅ FREE TIME SLOT
         await db.execute(
           `UPDATE staff_time_slots
            SET is_booked = 0
@@ -1058,6 +1079,14 @@ router.put(
             appointment.from_time,
             appointment.to_time,
           ]
+        );
+
+        // ✅ ALSO UPDATE appointments.is_booked
+        await db.execute(
+          `UPDATE appointments
+           SET is_booked = 0
+           WHERE id = ?`,
+          [id]
         );
       }
 
@@ -1133,10 +1162,10 @@ router.put(
         status === "assigned"
           ? "#2563eb"
           : status === "completed"
-            ? "#16a34a"
-            : status === "cancelled"
-              ? "#dc2626"
-              : "#6b7280";
+          ? "#16a34a"
+          : status === "cancelled"
+          ? "#dc2626"
+          : "#6b7280";
 
       if (client?.email) {
         await sendAppointmentStatusEmail(client.email, {

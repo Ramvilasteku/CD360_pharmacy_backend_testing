@@ -205,49 +205,104 @@ router.post(
     const conn = await db.getConnection();
     try {
       const adminId = req.user.id;
-      const { title, message, staff_ids = [], client_ids = [] } = req.body;
+      const { title, message } = req.body;
 
       await conn.beginTransaction();
 
-      const [notif] = await conn.execute(
-        `INSERT INTO notifications (sender_role, sender_id, title, message, type)
-         VALUES ('admin', ?, ?, ?, 'general')`,
+      // 1️⃣ Create notification
+      const [notifResult] = await conn.execute(
+        `
+        INSERT INTO notifications (admin_id, sender_role, title, message, type)
+        VALUES (?, 'admin', ?, ?, 'general')
+        `,
         [adminId, title, message]
       );
 
-      const notification_id = notif.insertId;
+      const notification_id = notifResult.insertId;
 
-      const receivers = [
-        ...staff_ids.map(id => ({ id, role: "staff" })),
-        ...client_ids.map(id => ({ id, role: "client" }))
-      ];
-
-      // save receivers in DB
-      await sendNotificationToReceivers(
-        conn,
-        notification_id,
-        receivers,
-        title,
-        message
+      // 2️⃣ Get all doctors & receptionists
+      const [staffRows] = await conn.execute(
+        `
+        SELECT id, role
+        FROM staff
+        WHERE admin_id = ? AND status = 1
+        `,
+        [adminId]
       );
 
-      // 🔔 SOCKET EMIT
+      // 3️⃣ Get all clients
+      const [clientRows] = await conn.execute(
+        `
+        SELECT id
+        FROM clients
+        WHERE admin_id = ? AND status = 1
+        `,
+        [adminId]
+      );
+
+      // 4️⃣ Prepare receivers
+      const receivers = [];
+
+      staffRows.forEach(staff => {
+        receivers.push({
+          role: staff.role, // 'doctor' | 'receptionist'
+          id: staff.id
+        });
+      });
+
+      clientRows.forEach(client => {
+        receivers.push({
+          role: "client",
+          id: client.id
+        });
+      });
+
+      // 5️⃣ Insert notification receivers
+      const receiverValues = receivers.map(r => [
+        notification_id,
+        r.role,
+        r.id
+      ]);
+
+      if (receiverValues.length) {
+        await conn.query(
+          `
+          INSERT INTO notification_receivers
+          (notification_id, receiver_role, receiver_id)
+          VALUES ?
+          `,
+          [receiverValues]
+        );
+      }
+
+      // 6️⃣ SOCKET.IO EMIT (REAL-TIME WEB NOTIFICATIONS)
       if (global.io) {
         receivers.forEach(({ id }) => {
-          global.io.to(id.toString()).emit("new-notification", {
-            notification_id,
-            title,
-            message,
-          });
+          global.io
+            .to(id.toString())
+            .emit("new-notification", {
+              notification_id,
+              title,
+              message,
+              type: "general",
+            });
         });
       }
 
       await conn.commit();
 
-      res.json({ success: true });
+      res.json({
+        success: true,
+        message: "Notification sent to all doctors, receptionists and clients",
+      });
+
     } catch (err) {
       await conn.rollback();
-      res.status(500).json({ error: err.message });
+      console.error("MIXED NOTIFICATION ERROR:", err);
+      res.status(500).json({
+        success: false,
+        message: "Failed to send notification",
+      });
     } finally {
       conn.release();
     }
