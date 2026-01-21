@@ -20,6 +20,12 @@ exports.authMiddleware = (req, res, next) => {
     // 2️⃣ Verify JWT
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    if (!decoded.otpVerified) {
+      return res.status(403).json({
+        message: "OTP verification required",
+      });
+    }
+
     // 3️⃣ Attach user payload to request
     req.user = {
       id: decoded.id,

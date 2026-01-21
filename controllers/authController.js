@@ -158,6 +158,11 @@ exports.verifyOtp = async (req, res) => {
     const { id, role, name, adminId } = req.user;
 
     if (!otp) return res.status(400).json({ message: "OTP required" });
+    if (!req.user?.otpVerified) {
+      return res.status(403).json({
+        message: "OTP verification required",
+      });
+    }
 
     const [rows] = await db.query(
       `SELECT * FROM login_otp
