@@ -178,14 +178,12 @@ router.get(
          FOOTER LEFT
       =============================== */
       doc
-        .text("HOSPITAL DETAILS", 50, 480, { underline: true })
-        .fontSize(10)
         .moveUp(0.5)
         .text(`${invoice.company_name} ` || "", 50, 500)
         .moveDown(0.5)
-        .text(`Email ID: ${invoice.admin_email}` || "-", { width: 250 })
+        .text(`${invoice.admin_email}` || "-", { width: 250 })
         .moveDown(0.5)
-        .text(`Address: ${invoice.admin_address}` || "-", { width: 250 });
+        .text(`${invoice.admin_address}` || "-", { width: 250 });
 
       /* ===============================
          FOOTER RIGHT
@@ -193,8 +191,6 @@ router.get(
       doc
         .text(`${invoice.company_name} ` || "", 410, 515)
 
-        .moveDown(0.5)
-        .text(`Email ID: ${invoice.admin_email}` || "-", { width: 250 })
         .moveDown(0.5);
 
       doc.end();
