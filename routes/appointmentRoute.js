@@ -667,6 +667,78 @@ router.get(
     }
   }
 );
+// ===================== DEFAULT TOTAL LIST APPOINTMENTS WITH WEEKLY FILTER AND MONTHLY FILTER ======================
+router.get(
+  "/appointments/completed/weekly",
+  authMiddleware,
+  allowRoles("admin"),
+  async (req, res) => {
+    try {
+      const adminId = req.user.id;
+      let { month, branch } = req.query;
+
+      // month format: YYYY-MM
+      if (!month) {
+        return res.status(400).json({
+          success: false,
+          message: "month is required (YYYY-MM)",
+        });
+      }
+
+      branch = branch ? branch.trim().toLowerCase() : null;
+
+      // First & last day of month
+      const startDate = `${month}-01`;
+      const endDate = `${month}-31`;
+
+      let whereClause = `
+        a.admin_id = ?
+        AND a.status = 'completed'
+        AND DATE(a.appointment_date) BETWEEN ? AND ?
+      `;
+
+      let params = [adminId, startDate, endDate];
+
+      if (branch) {
+        whereClause += " AND LOWER(s.branch) = ?";
+        params.push(branch);
+      }
+
+      const query = `
+        SELECT
+          WEEK(a.appointment_date, 1) 
+            - WEEK(DATE_SUB(a.appointment_date, INTERVAL DAYOFMONTH(a.appointment_date)-1 DAY), 1)
+            + 1 AS week_number,
+          COUNT(*) AS count
+        FROM appointments a
+        JOIN staff s ON s.id = a.staff_id
+        WHERE ${whereClause}
+        GROUP BY week_number
+        ORDER BY week_number
+      `;
+
+      const [rows] = await db.query(query, params);
+
+      const weeklyStats = rows.map((row) => ({
+        week: `Week ${row.week_number}`,
+        count: row.count,
+      }));
+
+      res.status(200).json({
+        success: true,
+        month,
+        weeklyStats,
+      });
+    } catch (error) {
+      console.error("Weekly completed appointments error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+);
+
 
 // ===================== CANCEL APPOINTMENT =====================
 router.put(

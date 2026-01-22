@@ -142,10 +142,18 @@ router.get(
       // ADMIN → fetch attendance of all staff for selected date
       if (role === "admin") {
         query = `
-          SELECT clock_in, clock_out, status, total_hours, date, staff_id
-          FROM staff_attendance
-          WHERE admin_id = ? AND date = ?
-        `;
+  SELECT 
+    sa.clock_in,
+    sa.clock_out,
+    sa.status,
+    sa.total_hours,
+    sa.date,
+    sa.staff_id,
+    s.name
+  FROM staff_attendance sa
+  JOIN staff s ON s.id = sa.staff_id
+  WHERE sa.admin_id = ? AND sa.date = ?
+`;
         params = [admin_id, date];
       }
 
@@ -324,6 +332,70 @@ router.get(
     }
   }
 );
+
+// GET DOCTORS PRESENT AND AVAILABLE TODAY
+router.get(
+  "/attendance/doctors",
+  authMiddleware,
+  allowRoles("admin"),
+  async (req, res) => {
+    try {
+      const admin_id = req.user.id;
+      const { date } = req.query;
+
+      if (!date) {
+        return res.status(400).json({
+          success: false,
+          message: "date is required in query (YYYY-MM-DD)",
+        });
+      }
+
+      const query = `
+        SELECT 
+          s.id AS staff_id,
+          s.name,
+          COALESCE(sa.status, 'absent') AS status
+        FROM staff s
+        LEFT JOIN staff_attendance sa 
+          ON sa.staff_id = s.id 
+          AND sa.date = ?
+          AND sa.admin_id = ?
+        WHERE s.role = 'doctor'
+          AND s.admin_id = ?
+      `;
+
+      const [rows] = await db.execute(query, [
+        date,
+        admin_id,
+        admin_id,
+      ]);
+
+      const presentDoctors = rows.filter(
+        (row) => row.status === "present"
+      );
+
+      const leaveDoctors = rows.filter(
+        (row) => row.status === "absent"
+      );
+
+      res.status(200).json({
+        success: true,
+        date,
+        presentDoctors,
+        presentCount: presentDoctors.length,
+        leaveDoctors,
+        leaveCount: leaveDoctors.length,
+        totalDoctors: rows.length,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
 
 /* ======================================================
 // UPDATE Attendance for Admin (any staff or own record)

@@ -400,6 +400,41 @@ router.get(
   }
 );
 
+/* ======================================================
+   GET STAFF BY ROLE (ADMIN WISE)
+====================================================== */
+router.get(
+  "/staff/role",
+  authMiddleware,
+  allowRoles("admin"),
+  async (req, res) => {
+    try {
+      const adminId = req.user.id;
+      const { role } = req.query;
+
+      let query = "SELECT * FROM staff WHERE admin_id = ?";
+      let params = [adminId];
+
+      if (role) {
+        query += " AND role = ?";
+        params.push(role);
+      }
+
+      const [rows] = await db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+);
+
 // GET THE STAFF ID WISE DETAILS
 router.get(
   "/staff/get/:id",

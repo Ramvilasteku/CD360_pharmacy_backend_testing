@@ -168,6 +168,36 @@ router.get(
     try {
       const adminId = req.user.id;
 
+      const { staff_id, rating, fromDate, toDate, role } = req.query;
+
+      let whereClause = "csr.admin_id = ?";
+      let params = [adminId];
+
+      if (staff_id) {
+        whereClause += " AND csr.staff_id = ?";
+        params.push(staff_id);
+      }
+
+      if (rating) {
+        whereClause += " AND csr.rating = ?";
+        params.push(rating);
+      }
+
+      if (fromDate) {
+        whereClause += " AND DATE(csr.created_at) >= ?";
+        params.push(fromDate);
+      }
+
+      if (toDate) {
+        whereClause += " AND DATE(csr.created_at) <= ?";
+        params.push(toDate);
+      }
+
+      if (role) {
+        whereClause += " AND s.role = ?";
+        params.push(role);
+      }
+
       const [reviews] = await db.query(
         `
         SELECT
@@ -177,28 +207,32 @@ router.get(
           COUNT(csr.id) AS total_reviews,
           ROUND(AVG(csr.rating), 1) + 0 AS avg_rating,
 
-          SUM(csr.rating = 5) +0 AS rating_5,
-          SUM(csr.rating = 4) +0 AS rating_4,
-          SUM(csr.rating = 3) +0 AS rating_3,
-          SUM(csr.rating = 2) +0 AS rating_2,
-          SUM(csr.rating = 1) +0 AS rating_1
+          SUM(csr.rating = 5) + 0 AS rating_5,
+          SUM(csr.rating = 4) + 0 AS rating_4,
+          SUM(csr.rating = 3) + 0 AS rating_3,
+          SUM(csr.rating = 2) + 0 AS rating_2,
+          SUM(csr.rating = 1) + 0 AS rating_1
         FROM client_staff_reviews csr
         LEFT JOIN staff s ON csr.staff_id = s.id
-
-        WHERE csr.admin_id = ?
+        WHERE ${whereClause}
         GROUP BY csr.staff_id, s.name
         ORDER BY avg_rating DESC
         `,
-        [adminId]
+        params
       );
 
-      res.json({ reviews });
+      res.json({
+        success: true,
+        filters: { staff_id, rating, fromDate, toDate, role },
+        reviews,
+      });
     } catch (err) {
       console.error("Error fetching admin reviews:", err);
       res.status(500).json({ message: "Internal server error" });
     }
   }
 );
+
 /* =========================================================
    📋 GET REVIEWS (ADMIN | RECEPTIONIST | DOCTOR | CLIENT)
 ========================================================= */
