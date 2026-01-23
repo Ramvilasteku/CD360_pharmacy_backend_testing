@@ -53,6 +53,7 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
+app.set("trust proxy", true);
 
 // 🔥 THIS LINE IS THE FIX
 app.use("/Images", express.static(path.join(__dirname, "Images")));
