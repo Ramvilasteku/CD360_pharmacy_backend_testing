@@ -1454,6 +1454,90 @@ router.get(
   }
 );
 
+//add this route before appointment/:id 
+
+router.get(
+  "/appointments/count",
+  authMiddleware,
+  allowRoles("admin", "receptionist"),
+  async (req, res) => {
+    try {
+      const role = req.user.role;
+      const adminId =
+        role === "admin" ? req.user.id : req.user.adminId;
+
+      let totalAppointments = 0;
+      let branch = "ALL";
+
+      // ==========================
+      // ADMIN → ALL appointments
+      // ==========================
+      if (role === "admin") {
+        const [[result]] = await db.execute(
+          `
+          SELECT COUNT(*) AS total
+          FROM appointments
+          WHERE admin_id = ?
+          `,
+          [adminId]
+        );
+
+        totalAppointments = result.total;
+      }
+
+      // ==========================
+      // RECEPTIONIST → SAME BRANCH
+      // ==========================
+      if (role === "receptionist") {
+        // 1️⃣ Get receptionist branch
+        const [[receptionist]] = await db.execute(
+          `
+          SELECT branch
+          FROM staff
+          WHERE id = ? AND admin_id = ?
+          `,
+          [req.user.id, adminId]
+        );
+
+        if (!receptionist || !receptionist.branch) {
+          return res.status(404).json({
+            success: false,
+            message: "Receptionist branch not found",
+          });
+        }
+
+        branch = receptionist.branch;
+
+        // 2️⃣ Count appointments under that branch
+        const [[result]] = await db.execute(
+          `
+          SELECT COUNT(*) AS total
+          FROM appointments a
+          JOIN staff s ON a.staff_id = s.id
+          WHERE a.admin_id = ?
+            AND s.branch = ?
+          `,
+          [adminId, branch]
+        );
+
+        totalAppointments = result.total;
+      }
+
+      res.json({
+        success: true,
+        role,
+        branch,
+        totalAppointments,
+      });
+    } catch (error) {
+      console.error("Appointments count error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch appointments count",
+      });
+    }
+  }
+);
 // ===================== GET LIST APPOINTMENTS TO BY ID TO CLIENT OR ALL BY  =====================
 router.get(
   "/appointments/:id",
@@ -1553,90 +1637,7 @@ router.get(
   }
 );
 
-//add this route before appointment/:id 
 
-router.get(
-  "/appointments/count",
-  authMiddleware,
-  allowRoles("admin", "receptionist"),
-  async (req, res) => {
-    try {
-      const role = req.user.role;
-      const adminId =
-        role === "admin" ? req.user.id : req.user.adminId;
-
-      let totalAppointments = 0;
-      let branch = "ALL";
-
-      // ==========================
-      // ADMIN → ALL appointments
-      // ==========================
-      if (role === "admin") {
-        const [[result]] = await db.execute(
-          `
-          SELECT COUNT(*) AS total
-          FROM appointments
-          WHERE admin_id = ?
-          `,
-          [adminId]
-        );
-
-        totalAppointments = result.total;
-      }
-
-      // ==========================
-      // RECEPTIONIST → SAME BRANCH
-      // ==========================
-      if (role === "receptionist") {
-        // 1️⃣ Get receptionist branch
-        const [[receptionist]] = await db.execute(
-          `
-          SELECT branch
-          FROM staff
-          WHERE id = ? AND admin_id = ?
-          `,
-          [req.user.id, adminId]
-        );
-
-        if (!receptionist || !receptionist.branch) {
-          return res.status(404).json({
-            success: false,
-            message: "Receptionist branch not found",
-          });
-        }
-
-        branch = receptionist.branch;
-
-        // 2️⃣ Count appointments under that branch
-        const [[result]] = await db.execute(
-          `
-          SELECT COUNT(*) AS total
-          FROM appointments a
-          JOIN staff s ON a.staff_id = s.id
-          WHERE a.admin_id = ?
-            AND s.branch = ?
-          `,
-          [adminId, branch]
-        );
-
-        totalAppointments = result.total;
-      }
-
-      res.json({
-        success: true,
-        role,
-        branch,
-        totalAppointments,
-      });
-    } catch (error) {
-      console.error("Appointments count error:", error);
-      res.status(500).json({
-        success: false,
-        message: "Failed to fetch appointments count",
-      });
-    }
-  }
-);
 
 router.get(
   "/role-based",

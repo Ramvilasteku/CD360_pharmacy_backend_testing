@@ -759,4 +759,89 @@ router.get(
   }
 );
 
+//count no of doctors of receptionist branch or all doctors count for admin 
+router.get(
+  "/staff/doctors/count",
+  authMiddleware,
+  allowRoles("admin", "receptionist"),
+  async (req, res) => {
+    try {
+      const role = req.user.role;
+      const adminId =
+        role === "admin" ? req.user.id : req.user.adminId;
+
+      let totalDoctors = 0;
+      let branch = "ALL";
+
+      // =========================
+      // ADMIN → ALL doctors
+      // =========================
+      if (role === "admin") {
+        const [[result]] = await db.execute(
+          `
+          SELECT COUNT(*) AS total
+          FROM staff
+          WHERE admin_id = ?
+            AND role = 'doctor'
+            AND status = 1
+          `,
+          [adminId]
+        );
+
+        totalDoctors = result.total;
+      }
+
+      // =========================
+      // RECEPTIONIST → SAME branch
+      // =========================
+      if (role === "receptionist") {
+        const [[receptionist]] = await db.execute(
+          `
+          SELECT branch
+          FROM staff
+          WHERE id = ? AND admin_id = ?
+          `,
+          [req.user.id, adminId]
+        );
+
+        if (!receptionist || !receptionist.branch) {
+          return res.status(404).json({
+            success: false,
+            message: "Receptionist branch not found",
+          });
+        }
+
+        branch = receptionist.branch;
+
+        const [[result]] = await db.execute(
+          `
+          SELECT COUNT(*) AS total
+          FROM staff
+          WHERE admin_id = ?
+            AND role = 'doctor'
+            AND branch = ?
+            AND status = 1
+          `,
+          [adminId, branch]
+        );
+
+        totalDoctors = result.total;
+      }
+
+      res.json({
+        success: true,
+        role,
+        branch,
+        totalDoctors,
+      });
+    } catch (error) {
+      console.error("Doctor count error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch doctor count",
+      });
+    }
+  }
+);
+
 module.exports = router;
