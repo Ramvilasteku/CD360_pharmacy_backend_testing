@@ -7,6 +7,45 @@ const { allowRoles } = require("../middlewares/roleMiddleware");
 /* ======================================================
 // CREATE Attendance by Staff clock in  
 ====================================================== */
+// router.post(
+//   "/attendance/clock-in",
+//   authMiddleware,
+//   allowRoles("doctor", "receptionist"),
+//   async (req, res) => {
+//     try {
+//       const staff_id = req.user.id;
+//       const admin_id = req.user.adminId;
+
+//       // Check if already clocked-in today
+//       const [exists] = await db.execute(
+//         `SELECT * FROM staff_attendance 
+//          WHERE staff_id = ? AND date = CURDATE()`,
+//         [staff_id]
+//       );
+
+//       if (exists.length > 0) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "Already clocked in today",
+//         });
+//       }
+
+//       await db.execute(
+//         `INSERT INTO staff_attendance 
+//         (admin_id, staff_id, date, clock_in, created_at)
+//         VALUES (?, ?, CURDATE(), CURTIME(), NOW())`,
+//         [admin_id, staff_id]
+//       );
+
+//       res.status(201).json({
+//         success: true,
+//         message: "Clock-in recorded",
+//       });
+//     } catch (error) {
+//       res.status(500).json({ success: false, error: error.message });
+//     }
+//   }
+// );
 router.post(
   "/attendance/clock-in",
   authMiddleware,
@@ -16,11 +55,23 @@ router.post(
       const staff_id = req.user.id;
       const admin_id = req.user.adminId;
 
-      // Check if already clocked-in today
+      // ✅ IST date & time (Node controlled)
+      const now = new Date();
+
+      const istDate = now.toLocaleDateString("en-CA", {
+        timeZone: "Asia/Kolkata",
+      }); // YYYY-MM-DD
+
+      const istTime = now.toLocaleTimeString("en-GB", {
+        timeZone: "Asia/Kolkata",
+        hour12: false,
+      }); // HH:mm:ss
+
+      // ❌ Prevent double clock-in
       const [exists] = await db.execute(
-        `SELECT * FROM staff_attendance 
-         WHERE staff_id = ? AND date = CURDATE()`,
-        [staff_id]
+        `SELECT id FROM staff_attendance 
+         WHERE staff_id = ? AND date = ?`,
+        [staff_id, istDate]
       );
 
       if (exists.length > 0) {
@@ -31,18 +82,24 @@ router.post(
       }
 
       await db.execute(
-        `INSERT INTO staff_attendance 
-        (admin_id, staff_id, date, clock_in, created_at)
-        VALUES (?, ?, CURDATE(), CURTIME(), NOW())`,
-        [admin_id, staff_id]
+        `INSERT INTO staff_attendance
+         (admin_id, staff_id, date, clock_in)
+         VALUES (?, ?, ?, ?)`,
+        [admin_id, staff_id, istDate, istTime]
       );
 
       res.status(201).json({
         success: true,
         message: "Clock-in recorded",
+        date: istDate,
+        clock_in: istTime,
       });
     } catch (error) {
-      res.status(500).json({ success: false, error: error.message });
+      console.error("Clock-in error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
     }
   }
 );
@@ -50,6 +107,68 @@ router.post(
 /* ======================================================
 // CREATE Attendance by Staff clock out  
 ====================================================== */
+// router.post(
+//   "/attendance/clock-out",
+//   authMiddleware,
+//   allowRoles("doctor", "receptionist"),
+//   async (req, res) => {
+//     try {
+//       const staff_id = req.user.id;
+
+//       // Check record for today
+//       const [rows] = await db.execute(
+//         `SELECT * FROM staff_attendance 
+//          WHERE staff_id = ? AND date = CURDATE()`,
+//         [staff_id]
+//       );
+
+//       if (!rows.length) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "Clock-in not found for today",
+//         });
+//       }
+
+//       const record = rows[0];
+
+//       if (record.clock_out) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "Already clocked out today",
+//         });
+//       }
+
+//       // Calculate total hours in MySQL
+//       const [update] = await db.execute(
+//         `
+//         UPDATE staff_attendance
+//         SET 
+//           clock_out = CURTIME(),
+//           total_hours = TIMESTAMPDIFF(MINUTE, 
+//                 CONCAT(date, ' ', clock_in), 
+//                 CONCAT(date, ' ', CURTIME())
+//           ) / 60,
+//           status = CASE
+//                       WHEN TIMESTAMPDIFF(MINUTE, CONCAT(date,' ',clock_in), CONCAT(date,' ',CURTIME()))/60 >= 6 
+//                         THEN 'present'
+//                       WHEN TIMESTAMPDIFF(MINUTE, CONCAT(date,' ',clock_in), CONCAT(date,' ',CURTIME()))/60 >= 4 
+//                         THEN 'half_day'
+//                       ELSE 'absent'
+//                    END
+//         WHERE staff_id = ? AND date = CURDATE()
+//       `,
+//         [staff_id]
+//       );
+
+//       res.status(200).json({
+//         success: true,
+//         message: "Clock-out recorded with status calculated",
+//       });
+//     } catch (error) {
+//       res.status(500).json({ success: false, error: error.message });
+//     }
+//   }
+// );
 router.post(
   "/attendance/clock-out",
   authMiddleware,
@@ -58,11 +177,23 @@ router.post(
     try {
       const staff_id = req.user.id;
 
-      // Check record for today
+      // ✅ IST date & time
+      const now = new Date();
+
+      const istDate = now.toLocaleDateString("en-CA", {
+        timeZone: "Asia/Kolkata",
+      }); // YYYY-MM-DD
+
+      const istTime = now.toLocaleTimeString("en-GB", {
+        timeZone: "Asia/Kolkata",
+        hour12: false,
+      }); // HH:mm:ss
+
+      // 🔍 Fetch today's attendance (IST date)
       const [rows] = await db.execute(
         `SELECT * FROM staff_attendance 
-         WHERE staff_id = ? AND date = CURDATE()`,
-        [staff_id]
+         WHERE staff_id = ? AND date = ?`,
+        [staff_id, istDate]
       );
 
       if (!rows.length) {
@@ -81,34 +212,39 @@ router.post(
         });
       }
 
-      // Calculate total hours in MySQL
-      const [update] = await db.execute(
-        `
-        UPDATE staff_attendance
-        SET 
-          clock_out = CURTIME(),
-          total_hours = TIMESTAMPDIFF(MINUTE, 
-                CONCAT(date, ' ', clock_in), 
-                CONCAT(date, ' ', CURTIME())
-          ) / 60,
-          status = CASE
-                      WHEN TIMESTAMPDIFF(MINUTE, CONCAT(date,' ',clock_in), CONCAT(date,' ',CURTIME()))/60 >= 6 
-                        THEN 'present'
-                      WHEN TIMESTAMPDIFF(MINUTE, CONCAT(date,' ',clock_in), CONCAT(date,' ',CURTIME()))/60 >= 4 
-                        THEN 'half_day'
-                      ELSE 'absent'
-                   END
-        WHERE staff_id = ? AND date = CURDATE()
-      `,
-        [staff_id]
+      // ⏱️ Calculate total hours in Node (safer)
+      const clockIn = new Date(`${istDate}T${record.clock_in}`);
+      const clockOut = new Date(`${istDate}T${istTime}`);
+
+      const diffMs = clockOut - clockIn;
+      const totalHours = +(diffMs / (1000 * 60 * 60)).toFixed(2);
+
+      // 🏷️ Status logic
+      let status = "absent";
+      if (totalHours >= 6) status = "present";
+      else if (totalHours >= 4) status = "half_day";
+
+      // ✅ Update record
+      await db.execute(
+        `UPDATE staff_attendance
+         SET clock_out = ?, total_hours = ?, status = ?
+         WHERE staff_id = ? AND date = ?`,
+        [istTime, totalHours, status, staff_id, istDate]
       );
 
       res.status(200).json({
         success: true,
-        message: "Clock-out recorded with status calculated",
+        message: "Clock-out recorded",
+        clock_out: istTime,
+        total_hours: totalHours,
+        status,
       });
     } catch (error) {
-      res.status(500).json({ success: false, error: error.message });
+      console.error("Clock-out error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
     }
   }
 );
