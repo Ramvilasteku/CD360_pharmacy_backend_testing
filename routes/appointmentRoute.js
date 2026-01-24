@@ -275,12 +275,23 @@ router.get(
       }
 
       if (role === "receptionist") {
+        // const [[receptionist]] = await db.query(
+        //   `SELECT branch
+        //    FROM staff
+        //    WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+        //   [userId, adminId]
+        // );
         const [[receptionist]] = await db.query(
-          `SELECT branch
-           FROM staff
-           WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+          `SELECT a.*
+   FROM appointments a
+   JOIN staff s ON s.branch = a.visited_branch
+   WHERE s.id = ?
+     AND s.admin_id = ?
+     AND s.role = 'receptionist'
+     AND s.status = 1`,
           [userId, adminId]
         );
+
 
         if (!receptionist || !receptionist.branch) {
           return res.status(403).json({
@@ -1234,10 +1245,10 @@ router.put(
         status === "assigned"
           ? "#2563eb"
           : status === "completed"
-          ? "#16a34a"
-          : status === "cancelled"
-          ? "#dc2626"
-          : "#6b7280";
+            ? "#16a34a"
+            : status === "cancelled"
+              ? "#dc2626"
+              : "#6b7280";
 
       if (client?.email) {
         await sendAppointmentStatusEmail(client.email, {
