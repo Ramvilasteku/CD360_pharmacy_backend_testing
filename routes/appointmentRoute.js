@@ -274,24 +274,37 @@ router.get(
         baseParams.push(userId);
       }
 
+      // if (role === "receptionist") {
+      //   const [[receptionist]] = await db.query(
+      //     `SELECT branch
+      //      FROM staff
+      //      WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+      //     [userId, adminId]
+      //   );
+
+
+      //   if (!receptionist || !receptionist.branch) {
+      //     return res.status(403).json({
+      //       success: false,
+      //       message: "Invalid receptionist branch",
+      //     });
+      //   }
+
+      //   const recBranch = receptionist.branch.trim().toLowerCase();
+      //   baseWhere += " AND LOWER(s.branch) = ?";
+      //   baseParams.push(recBranch);
+      //   branch = recBranch;
+      // }
       if (role === "receptionist") {
-        // const [[receptionist]] = await db.query(
-        //   `SELECT branch
-        //    FROM staff
-        //    WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
-        //   [userId, adminId]
-        // );
         const [[receptionist]] = await db.query(
-          `SELECT a.*
-   FROM appointments a
-   JOIN staff s ON s.branch = a.visited_branch
-   WHERE s.id = ?
-     AND s.admin_id = ?
-     AND s.role = 'receptionist'
-     AND s.status = 1`,
+          `SELECT branch
+     FROM staff
+     WHERE id = ?
+       AND admin_id = ?
+       AND role = 'receptionist'
+       AND status = 1`,
           [userId, adminId]
         );
-
 
         if (!receptionist || !receptionist.branch) {
           return res.status(403).json({
@@ -301,10 +314,14 @@ router.get(
         }
 
         const recBranch = receptionist.branch.trim().toLowerCase();
-        baseWhere += " AND LOWER(s.branch) = ?";
+
+        // 🔥 THIS is the key line
+        baseWhere += " AND LOWER(a.selected_branch) = ?";
         baseParams.push(recBranch);
+
         branch = recBranch;
       }
+
 
       if (role === "admin" && branch) {
         baseWhere += " AND LOWER(s.branch) = ?";
