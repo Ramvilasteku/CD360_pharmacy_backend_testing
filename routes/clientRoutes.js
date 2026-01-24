@@ -345,11 +345,12 @@ router.put(
 router.delete(
   "/client/delete/:id",
   authMiddleware,
-  allowRoles("admin"),
+  allowRoles("admin","receptionist"),
   async (req, res) => {
     try {
       const patientId = req.params.id;
-      const adminId = req.user.id;
+      const adminId =
+        req.user.role === "admin" ? req.user.id : req.user.adminId;
 
       if (!patientId) {
         return res.status(400).json({

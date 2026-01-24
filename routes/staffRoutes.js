@@ -323,8 +323,8 @@ router.put(
   uploadStaffPhoto.single("profile_photo"),
   async (req, res) => {
     try {
-      const staffId = req.user.id;       // from cookie
-      const adminId = req.user.adminId; // from cookie
+      const staffId = req.user.id;
+      const adminId = req.user.adminId;
 
       /* ✅ Verify staff exists under same admin */
       const [rows] = await db.execute(
@@ -334,22 +334,40 @@ router.put(
 
       if (!rows.length) {
         return res.status(404).json({
+          success: false,
           message: "Staff not found or unauthorized",
         });
       }
 
       const staff = rows[0];
 
+      /* ✅ If email is being changed → check duplicate */
+      if (req.body.email && req.body.email !== staff.email) {
+        const [emailExists] = await db.execute(
+          `SELECT id FROM staff 
+           WHERE email = ? AND admin_id = ? AND id != ?`,
+          [req.body.email, adminId, staffId]
+        );
+
+        if (emailExists.length > 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Email already exists",
+          });
+        }
+      }
+
       /* ✅ Handle profile photo */
       const photoPath = req.file
         ? `companies/admin_${adminId}/staff/staff_${staffId}/profile_photo/${req.file.filename}`
         : staff.profile_photo;
 
-      /* ✅ Update allowed fields ONLY */
+      /* ✅ Update allowed fields */
       await db.execute(
         `
         UPDATE staff SET
           name = ?,
+          email = ?,            -- ✅ EMAIL ADDED
           mobile = ?,
           address = ?,
           branch = ?,
@@ -359,6 +377,7 @@ router.put(
         `,
         [
           req.body.name || staff.name,
+          req.body.email || staff.email,      // ✅ SAFE EMAIL UPDATE
           req.body.mobile || staff.mobile,
           req.body.address || staff.address,
           req.body.branch || staff.branch,
@@ -379,7 +398,10 @@ router.put(
       });
     } catch (error) {
       console.error("STAFF SELF UPDATE ERROR:", error);
-      res.status(500).json({ error: "Server error" });
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
     }
   }
 );
