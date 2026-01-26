@@ -800,8 +800,8 @@ router.get(
       if (role === "receptionist") {
         const [[receptionist]] = await db.query(
           `SELECT branch
-           FROM staff
-           WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+     FROM staff
+     WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
           [userId, adminId]
         );
 
@@ -814,12 +814,11 @@ router.get(
 
         const recBranch = receptionist.branch.trim().toLowerCase();
 
-        // 🔥 THIS is the key line
-        baseWhere += " AND LOWER(a.selected_branch) = ?";
-        baseParams.push(recBranch);
-
-        branch = recBranch;
+        // ✅ FIXED
+        where += " AND LOWER(a.selected_branch) = ?";
+        params.push(recBranch);
       }
+
 
       // ==========================
       // FETCH APPOINTMENT
