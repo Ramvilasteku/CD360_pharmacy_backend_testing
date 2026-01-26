@@ -767,6 +767,104 @@ router.get(
   }
 );
 
+// ===================== GET LIST APPOINTMENTS TO BY ID TO CLIENT OR ALL BY  =====================
+router.get(
+  "/appointments/:id",
+  authMiddleware,
+  allowRoles("admin", "client", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const appointmentId = req.params.id;
+      const { role, id: userId } = req.user;
+      const adminId = role === "admin" ? userId : req.user.adminId;
+
+      // ==========================
+      // BASE WHERE CONDITIONS
+      // ==========================
+      let where = `a.id = ? AND a.admin_id = ?`;
+      let params = [appointmentId, adminId];
+
+      // ==========================
+      // ROLE BASED ACCESS
+      // ==========================
+      if (role === "client") {
+        where += " AND a.client_id = ?";
+        params.push(userId);
+      }
+
+      if (role === "doctor") {
+        where += " AND a.staff_id = ?";
+        params.push(userId);
+      }
+
+      if (role === "receptionist") {
+        const [[receptionist]] = await db.query(
+          `SELECT branch
+           FROM staff
+           WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+          [userId, adminId]
+        );
+
+        if (!receptionist || !receptionist.branch) {
+          return res.status(403).json({
+            success: false,
+            message: "Invalid receptionist branch",
+          });
+        }
+
+        where += " AND LOWER(s.branch) = ?";
+        params.push(receptionist.branch.trim().toLowerCase());
+      }
+
+      // ==========================
+      // FETCH APPOINTMENT
+      // ==========================
+      const [[appointment]] = await db.query(
+        `SELECT
+          a.id,
+          a.purpose,
+          a.selected_branch,
+          DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
+          TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
+          TIME_FORMAT(a.to_time, '%H:%i') AS to_time,
+          a.status,
+          a.created_at,
+
+          c.id AS client_id,
+          c.name AS client_name,
+          c.mobile AS client_mobile,
+
+          s.id AS doctor_id,
+          s.name AS doctor_name,
+          s.branch
+         FROM appointments a
+         JOIN clients c ON c.id = a.client_id
+         JOIN staff s ON s.id = a.staff_id
+         WHERE ${where}
+         LIMIT 1`,
+        params
+      );
+
+      if (!appointment) {
+        return res.status(404).json({
+          success: false,
+          message: "Appointment not found or access denied",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        appointment,
+      });
+    } catch (error) {
+      console.error("Get appointment by id error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+);
 
 // ===================== CANCEL APPOINTMENT =====================
 router.put(
@@ -1566,104 +1664,7 @@ router.get(
     }
   }
 );
-// ===================== GET LIST APPOINTMENTS TO BY ID TO CLIENT OR ALL BY  =====================
-router.get(
-  "/appointments/:id",
-  authMiddleware,
-  allowRoles("admin", "client", "doctor", "receptionist"),
-  async (req, res) => {
-    try {
-      const appointmentId = req.params.id;
-      const { role, id: userId } = req.user;
-      const adminId = role === "admin" ? userId : req.user.adminId;
 
-      // ==========================
-      // BASE WHERE CONDITIONS
-      // ==========================
-      let where = `a.id = ? AND a.admin_id = ?`;
-      let params = [appointmentId, adminId];
-
-      // ==========================
-      // ROLE BASED ACCESS
-      // ==========================
-      if (role === "client") {
-        where += " AND a.client_id = ?";
-        params.push(userId);
-      }
-
-      if (role === "doctor") {
-        where += " AND a.staff_id = ?";
-        params.push(userId);
-      }
-
-      if (role === "receptionist") {
-        const [[receptionist]] = await db.query(
-          `SELECT branch
-           FROM staff
-           WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
-          [userId, adminId]
-        );
-
-        if (!receptionist || !receptionist.branch) {
-          return res.status(403).json({
-            success: false,
-            message: "Invalid receptionist branch",
-          });
-        }
-
-        where += " AND LOWER(s.branch) = ?";
-        params.push(receptionist.branch.trim().toLowerCase());
-      }
-
-      // ==========================
-      // FETCH APPOINTMENT
-      // ==========================
-      const [[appointment]] = await db.query(
-        `SELECT
-          a.id,
-          a.purpose,
-          a.selected_branch,
-          DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
-          TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
-          TIME_FORMAT(a.to_time, '%H:%i') AS to_time,
-          a.status,
-          a.created_at,
-
-          c.id AS client_id,
-          c.name AS client_name,
-          c.mobile AS client_mobile,
-
-          s.id AS doctor_id,
-          s.name AS doctor_name,
-          s.branch
-         FROM appointments a
-         JOIN clients c ON c.id = a.client_id
-         JOIN staff s ON s.id = a.staff_id
-         WHERE ${where}
-         LIMIT 1`,
-        params
-      );
-
-      if (!appointment) {
-        return res.status(404).json({
-          success: false,
-          message: "Appointment not found or access denied",
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        appointment,
-      });
-    } catch (error) {
-      console.error("Get appointment by id error:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Internal server error",
-      });
-    }
-  }
-);
 
 
 
