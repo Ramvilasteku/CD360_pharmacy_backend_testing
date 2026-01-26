@@ -769,7 +769,7 @@ router.get(
 
 // ===================== GET LIST APPOINTMENTS TO BY ID TO CLIENT OR ALL BY  =====================
 router.get(
-  "/appointmentgetbyid/:id",
+  "/appointments/:id",
   authMiddleware,
   allowRoles("admin", "client", "doctor", "receptionist"),
   async (req, res) => {
@@ -812,8 +812,13 @@ router.get(
           });
         }
 
-        where += " AND LOWER(s.branch) = ?";
-        params.push(receptionist.branch.trim().toLowerCase());
+        const recBranch = receptionist.branch.trim().toLowerCase();
+
+        // 🔥 THIS is the key line
+        baseWhere += " AND LOWER(a.selected_branch) = ?";
+        baseParams.push(recBranch);
+
+        branch = recBranch;
       }
 
       // ==========================
