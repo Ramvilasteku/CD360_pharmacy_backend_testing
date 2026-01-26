@@ -769,7 +769,7 @@ router.get(
 
 // ===================== GET LIST APPOINTMENTS TO BY ID TO CLIENT OR ALL BY  =====================
 router.get(
-  "/appointments/:id",
+  "/appointmentgetbyid/:id",
   authMiddleware,
   allowRoles("admin", "client", "doctor", "receptionist"),
   async (req, res) => {
@@ -1664,8 +1664,6 @@ router.get(
     }
   }
 );
-
-
 
 
 router.get(
