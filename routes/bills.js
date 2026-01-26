@@ -128,6 +128,92 @@ router.post(
    📄 GET BILLS (Admin | Receptionist | Client)
 ========================================================= */
 
+// router.get(
+//   "/bills",
+//   authMiddleware,
+//   allowRoles("admin", "receptionist", "client"),
+//   async (req, res) => {
+//     try {
+//       const { role, id: userId } = req.user;
+//       const adminId = resolveAdminId(req.user);
+
+//       let { client_id, branch, date } = req.query;
+
+//       client_id = normalizeNumber(client_id);
+//       branch = normalizeLower(branch);
+//       date = normalizeString(date);
+
+//       let where = ["b.admin_id = ?"];
+//       let params = [adminId];
+
+//       /* 🔐 ROLE RULES */
+
+//       if (role === "client") {
+//         where.push("b.client_id = ?");
+//         params.push(userId);
+//       }
+
+//       if ((role === "admin" || role === "receptionist") && client_id) {
+//         where.push("b.client_id = ?");
+//         params.push(client_id);
+//       }
+
+//       /* 📅 DATE FILTER */
+//       if (date) {
+//         where.push("DATE(b.created_at) = ?");
+//         params.push(date);
+//       }
+
+//       /* 🏢 BRANCH FILTER (staff table) */
+//       if (branch) {
+//         where.push("LOWER(s.branch) = ?");
+//         params.push(branch);
+//       }
+
+//       const [rows] = await db.query(
+//         `
+//         SELECT
+//           b.id AS bill_id,
+//           b.appointment_id,
+//           b.client_id,
+//           b.staff_id,
+//           b.subtotal,
+//           b.tax,
+//           b.total_amount,
+//           b.bill_status,
+//           b.notes,
+//           b.created_at,
+
+//           c.name AS client_name,
+//           s.name AS staff_name,
+//           s.role AS staff_role,
+//           s.branch
+
+//         FROM bills b
+//         JOIN clients c ON c.id = b.client_id
+//         LEFT JOIN staff s ON s.id = b.staff_id
+//         WHERE ${where.join(" AND ")}
+//         ORDER BY b.created_at DESC
+//         `,
+//         params
+//       );
+
+//       res.status(200).json({
+//         success: true,
+//         role,
+//         filters: { client_id, branch, date },
+//         count: rows.length,
+//         bills: rows
+//       });
+
+//     } catch (error) {
+//       console.error("GET BILLS ERROR:", error);
+//       res.status(500).json({ success: false, message: "Internal server error" });
+//     }
+//   }
+// );
+
+
 router.get(
   "/bills",
   authMiddleware,
@@ -146,29 +232,70 @@ router.get(
       let where = ["b.admin_id = ?"];
       let params = [adminId];
 
-      /* 🔐 ROLE RULES */
+      /* =========================
+         🔐 ROLE RULES
+      ========================== */
 
+      // 👤 Client: only own bills
       if (role === "client") {
         where.push("b.client_id = ?");
         params.push(userId);
       }
 
-      if ((role === "admin" || role === "receptionist") && client_id) {
+      // 🧾 Admin: optional client filter
+      if (role === "admin" && client_id) {
         where.push("b.client_id = ?");
         params.push(client_id);
       }
 
-      /* 📅 DATE FILTER */
+      /* =========================
+         🏢 RECEPTIONIST BRANCH LOCK
+      ========================== */
+
+      if (role === "receptionist") {
+        const [[rec]] = await db.query(
+          `SELECT branch
+           FROM staff
+           WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+          [userId, adminId]
+        );
+
+        if (!rec || !rec.branch) {
+          return res.status(403).json({
+            success: false,
+            message: "Invalid receptionist branch",
+          });
+        }
+
+        const recBranch = rec.branch.trim().toLowerCase();
+
+        // 🔒 Force appointment branch match
+        where.push("LOWER(a.selected_branch) = ?");
+        params.push(recBranch);
+      }
+
+      /* =========================
+         📅 DATE FILTER
+      ========================== */
+
       if (date) {
         where.push("DATE(b.created_at) = ?");
         params.push(date);
       }
 
-      /* 🏢 BRANCH FILTER (staff table) */
-      if (branch) {
-        where.push("LOWER(s.branch) = ?");
+      /* =========================
+         🏢 ADMIN BRANCH FILTER
+         (admin only)
+      ========================== */
+
+      if (role === "admin" && branch) {
+        where.push("LOWER(a.selected_branch) = ?");
         params.push(branch);
       }
+
+      /* =========================
+         📦 FETCH BILLS
+      ========================== */
 
       const [rows] = await db.query(
         `
@@ -187,31 +314,36 @@ router.get(
           c.name AS client_name,
           s.name AS staff_name,
           s.role AS staff_role,
-          s.branch
+          a.selected_branch
 
         FROM bills b
         JOIN clients c ON c.id = b.client_id
         LEFT JOIN staff s ON s.id = b.staff_id
+        JOIN appointments a ON a.id = b.appointment_id
+
         WHERE ${where.join(" AND ")}
         ORDER BY b.created_at DESC
         `,
         params
       );
 
-      res.status(200).json({
+      return res.status(200).json({
         success: true,
         role,
-        filters: { client_id, branch, date },
         count: rows.length,
-        bills: rows
+        bills: rows,
       });
 
     } catch (error) {
       console.error("GET BILLS ERROR:", error);
-      res.status(500).json({ success: false, message: "Internal server error" });
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
     }
   }
 );
+
 
 // GET THE BILLS BY ID (Admin | Receptionist | Client)
 router.get(
