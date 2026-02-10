@@ -34,6 +34,7 @@ router.get(
           b.tax,
           b.total_amount,
           b.created_at,
+          b.notes,
 
           a.company_name,
           a.email AS admin_email,
@@ -155,7 +156,7 @@ router.get(
       =============================== */
       doc
         .fontSize(11)
-        .text("Consultation Charges", 50, 320)
+        .text(`${invoice.notes || "Consultation Charges"}`, 50, 320)
         .text(`${invoice.subtotal} Rs`, 450, 320);
 
       doc.moveTo(50, 340).lineTo(550, 340).stroke();
