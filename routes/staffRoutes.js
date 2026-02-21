@@ -76,12 +76,12 @@ const uploadStaffPhoto = multer({
 /* ================= EMAIL CONFIG ================= */
 
 const transporter = nodemailer.createTransport({
-  host: "smtp.zoho.in", // or smtp.zoho.com
-  port: 465,
-  secure: true,
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false,
   auth: {
-    user: "info@ridgeveda.com",
-    pass: process.env.ZOHO_APP_PASS, // Zoho SMTP App Password
+    user: "caredesk360@gmail.com",
+    pass: process.env.MAIL_PASS,
   },
 });
 

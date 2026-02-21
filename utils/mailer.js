@@ -1,12 +1,12 @@
 const nodemailer = require("nodemailer");
 
 const transporter = nodemailer.createTransport({
-  host: "smtp.zoho.in",
+  host: "smtp.gmail.com",
   port: 587,
   secure: false,
   auth: {
-    user: process.env.EMAIL_USER, // info@ridgeveda.com
-    pass: process.env.ZOHO_APP_PASS,  // Zoho app password
+    user: "caredesk360@gmail.com",
+    pass: process.env.MAIL_PASS,
   },
 });
 
