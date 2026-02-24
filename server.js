@@ -13,6 +13,9 @@ const testRoute = require("./routes/testRoute");
 const appointment = require("./routes/appointmentRoute");
 const clientStaffReviews = require("./routes/clientStaffReviews");
 const bill = require("./routes/bills.js");
+const admin = require("./routes/admin.js");
+const contact = require("./routes/contact.js");
+const demo = require("./routes/demo.js");
 
 // Socket initializer
 
@@ -93,6 +96,9 @@ app.use("/schedule",doctorschedule);
 // app.use("/api", complianceTypeRoutes);
 // app.use("/api", documentRequirements);
 app.use("/api", invoiceRoutes);
+app.use("/admin", admin);
+app.use("/contact", contact);
+app.use("/demo", demo);
 
 // ---------- START HTTP + WS SERVER ----------
 server.listen(5000, () => {
