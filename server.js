@@ -9,13 +9,13 @@ require("dotenv").config();
 const authController = require("./controllers/authController.js");
 const stafftimeSlots = require("./routes/stafftimeslots");
 const serviceRequest = require("./routes/serviceRequestRoute");
-const testRoute = require("./routes/testRoute");
+// const testRoute = require("./routes/testRoute");
 const appointment = require("./routes/appointmentRoute");
 const clientStaffReviews = require("./routes/clientStaffReviews");
 const bill = require("./routes/bills.js");
-const admin = require("./routes/admin.js");
-const contact = require("./routes/contact.js");
-const demo = require("./routes/demo.js");
+const medicinesRoutes = require("./routes/medicinesRoutes.js");
+const consultationTypesRoute = require("./routes/consultationTypes.js");
+const clientPrescriptionsRouter = require("./routes/clientPrescriptionsRoute");
 
 // Socket initializer
 
@@ -38,7 +38,8 @@ const doctorschedule = require("./routes/doctorschedule.js");
 // const complianceTypeRoutes = require("./routes/complianceType");
 const invoiceRoutes = require("./routes/invoiceRoutes.js");
 // const documentRequirements = require("./routes/documentRequirements");
-
+const testsRoutes = require("./routes/testRoutes.js");
+const prescription = require("./routes/prescription.js");
 const app = express();
 const server = http.createServer(app);
 const path = require("path");
@@ -56,7 +57,6 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
-app.set("trust proxy", true);
 
 // 🔥 THIS LINE IS THE FIX
 app.use("/Images", express.static(path.join(__dirname, "Images")));
@@ -70,7 +70,7 @@ app.post("/verify-otp", authController.loginAuth, authController.verifyOtp);
 app.post("/logout", authController.logout);
 app;
 // Test Route
-app.use("/test", testRoute);
+// app.use("/test", testRoute);
 
 // ---------- PROTECTED ROUTES ----------
 
@@ -96,9 +96,11 @@ app.use("/schedule",doctorschedule);
 // app.use("/api", complianceTypeRoutes);
 // app.use("/api", documentRequirements);
 app.use("/api", invoiceRoutes);
-app.use("/admin", admin);
-app.use("/contact", contact);
-app.use("/demo", demo);
+app.use("/api/medicines", medicinesRoutes);
+app.use("/api/tests", testsRoutes);
+app.use("/api/prescriptions",prescription );
+app.use("/api/consultation-types", consultationTypesRoute);
+app.use("/api/client/prescriptions", clientPrescriptionsRouter);
 
 // ---------- START HTTP + WS SERVER ----------
 server.listen(5000, () => {

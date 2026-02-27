@@ -41,9 +41,9 @@ jobs:
             npm install --production
 
             echo "♻️ Restarting PM2 process..."
-            pm2 describe backend > /dev/null \
-            && pm2 restart backend \
-            || pm2 start server.js --name backend
+            pm2 describe wellness > /dev/null \
+            && pm2 restart wellness \
+            || pm2 start server.js --name wellness
 
             echo "💾 Saving PM2 process list..."
             pm2 save

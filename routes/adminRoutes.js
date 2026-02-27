@@ -385,6 +385,48 @@ router.get(
   }
 );
 
+router.get(
+  "/company-info/full",
+  authMiddleware,
+  allowRoles("client", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const { adminId } = req.user;
+ 
+      if (!adminId) {
+        return res.status(400).json({
+          success: false,
+          message: "Admin ID not associated with this user",
+        });
+      }
+ 
+      const [rows] = await db.execute(
+        "SELECT * FROM admins WHERE id = ?",
+        [adminId]
+      );
+ 
+      if (!rows.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Admin not found",
+        });
+      }
+ 
+      return res.status(200).json({
+        success: true,
+        data: rows[0],
+      });
+ 
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
+    }
+  }
+);
+
 /* ======================================================
    DELETE ADMIN
 ====================================================== */

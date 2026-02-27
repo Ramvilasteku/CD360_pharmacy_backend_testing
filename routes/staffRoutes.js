@@ -195,6 +195,9 @@ router.post(
           <p style="margin: 8px 0 0; font-size: 14px; color: #333;">
             <strong>Temporary Password:</strong> ${password}
           </p>
+          <p style="margin: 8px 0 0; font-size: 14px; color: #333;">
+            <strong>Login Url:</strong> <a href="https://caredesk360.com/login">click here</a>
+          </p>
         </div>
 
         <p style="color: #555; font-size: 14px; line-height: 1.6;">
