@@ -93,6 +93,126 @@ router.get(
   }
 );
 
+router.get(
+  "/fhir/appointment/pending",
+  authMiddleware,
+  allowRoles("admin", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const user = req.user;
+
+      let query = `
+        SELECT DISTINCT
+          c.id AS client_id,
+          c.name,
+          c.email,
+          c.mobile,
+          c.gender,
+          c.dob,
+
+          a.id AS appointment_id,
+          a.staff_id,
+          a.appointment_date,
+          a.from_time,
+          a.to_time,
+          a.selected_branch,
+          a.status AS appointment_status
+
+        FROM appointments a
+        INNER JOIN clients c ON c.id = a.client_id
+        LEFT JOIN prescriptions p ON p.appointment_id = a.id
+
+        WHERE a.status = 'assigned'
+          AND p.id IS NULL
+          AND a.admin_id = ?
+          AND c.admin_id = ?
+      `;
+
+      const params = [];
+
+      // ROLE LOGIC
+      if (user.role === "admin") {
+        params.push(user.id, user.id);
+      }
+
+      if (user.role === "doctor") {
+        query += ` AND a.staff_id = ?`;
+        params.push(user.adminId, user.adminId, user.id);
+      }
+
+      if (user.role === "receptionist") {
+        params.push(user.adminId, user.adminId);
+      }
+
+      query += ` ORDER BY a.appointment_date ASC, a.from_time ASC`;
+
+      const [rows] = await db.execute(query, params);
+
+      // 🔄 Convert to FHIR Bundle
+      const entries = rows.map((r) => {
+        const start = `${r.appointment_date}T${r.from_time}`;
+        const end = `${r.appointment_date}T${r.to_time}`;
+
+        return {
+          resource: {
+            resourceType: "Appointment",
+            id: String(r.appointment_id),
+            status: "booked", // mapped from assigned
+            start,
+            end,
+            participant: [
+              {
+                actor: {
+                  reference: `Patient/${r.client_id}`,
+                  display: r.name
+                },
+                status: "accepted"
+              },
+              {
+                actor: {
+                  reference: `Practitioner/${r.staff_id}`
+                },
+                status: "accepted"
+              }
+            ],
+            reasonCode: [
+              { text: "Pending consultation" }
+            ],
+            location: [
+              { display: r.selected_branch }
+            ]
+          }
+        };
+      });
+
+      const bundle = {
+        resourceType: "Bundle",
+        type: "searchset",
+        total: entries.length,
+        entry: entries
+      };
+
+      res.setHeader("Content-Type", "application/fhir+json");
+
+      res.status(200).json(bundle);
+
+    } catch (err) {
+      console.error("FHIR pending appointments error:", err);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [
+          {
+            severity: "error",
+            code: "exception",
+            diagnostics: "Unable to fetch pending appointments"
+          }
+        ]
+      });
+    }
+  }
+);
+
 
 // ===================== CREATE APPOINTMENT =====================
 router.post(
@@ -331,6 +451,188 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
   }
 );
 
+router.post(
+  "/fhir/appointment",
+  authMiddleware,
+  allowRoles("client", "receptionist"),
+  async (req, res) => {
+    try {
+      // ✅ Validate FHIR resource
+      if (req.body.resourceType !== "Appointment") {
+        return res.status(400).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "invalid",
+            diagnostics: "Invalid resourceType, expected Appointment"
+          }]
+        });
+      }
+
+      const { role, id: userId, adminId } = req.user;
+
+      // 🔄 Extract FHIR fields
+      const patientRef = req.body.participant?.find(p =>
+        p.actor?.reference?.startsWith("Patient/")
+      );
+
+      const doctorRef = req.body.participant?.find(p =>
+        p.actor?.reference?.startsWith("Practitioner/")
+      );
+
+      const clientId = role === "client"
+        ? userId
+        : Number(patientRef?.actor?.reference?.split("/")[1]);
+
+      const doctorId = Number(
+        doctorRef?.actor?.reference?.split("/")[1]
+      );
+
+      const start = req.body.start;
+      const end = req.body.end;
+
+      const purpose = req.body.reasonCode?.[0]?.text || "";
+      const selected_branch = req.body.location?.[0]?.display || "";
+
+      if (!doctorId || !start || !end || !purpose || !selected_branch) {
+        return res.status(400).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "required",
+            diagnostics: "Missing required FHIR fields"
+          }]
+        });
+      }
+
+      // 🕒 Convert datetime
+      const appointment_date = start.split("T")[0];
+      const from_time = start.split("T")[1]?.slice(0,5);
+      const to_time = end.split("T")[1]?.slice(0,5);
+
+      // 👤 Validate client
+      const [clients] = await db.query(
+        `SELECT id, name, email FROM clients WHERE id=? AND admin_id=?`,
+        [clientId, adminId]
+      );
+      if (!clients.length) {
+        return res.status(404).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "not-found",
+            diagnostics: "Patient not found"
+          }]
+        });
+      }
+      const client = clients[0];
+
+      // 👨‍⚕️ Validate doctor
+      const [doctors] = await db.query(
+        `SELECT id, name, branch FROM staff
+         WHERE id=? AND role='doctor' AND admin_id=? AND status=1`,
+        [doctorId, adminId]
+      );
+      if (!doctors.length) {
+        return res.status(404).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "not-found",
+            diagnostics: "Doctor not found"
+          }]
+        });
+      }
+      const doctor = doctors[0];
+
+      // ⏱️ Slot check
+      const [slots] = await db.query(
+        `SELECT id FROM staff_time_slots
+         WHERE admin_id=? AND staff_id=? AND slot_date=? 
+         AND slot_time_from=? AND slot_time_to=? AND is_booked=0`,
+        [adminId, doctorId, appointment_date, from_time, to_time]
+      );
+      if (!slots.length) {
+        return res.status(400).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "conflict",
+            diagnostics: "Slot not available"
+          }]
+        });
+      }
+
+      const slotId = slots[0].id;
+
+      // 📝 Insert appointment
+      const [result] = await db.query(
+        `INSERT INTO appointments
+        (admin_id, client_id, staff_id, purpose, selected_branch, status, appointment_date, from_time, to_time, is_booked)
+        VALUES (?, ?, ?, ?, ?, 'booked', ?, ?, ?, 1)`,
+        [
+          adminId,
+          clientId,
+          doctorId,
+          purpose,
+          selected_branch,
+          appointment_date,
+          from_time,
+          to_time
+        ]
+      );
+
+      const appointmentId = result.insertId;
+
+      // 🔒 Lock slot
+      await db.query(
+        `UPDATE staff_time_slots SET is_booked=1 WHERE id=?`,
+        [slotId]
+      );
+
+      // 📤 FHIR Response
+      res.setHeader("Content-Type", "application/fhir+json");
+      res.setHeader("Location", `/fhir/Appointment/${appointmentId}`);
+
+      res.status(201).json({
+        resourceType: "Appointment",
+        id: String(appointmentId),
+        status: "booked",
+        start,
+        end,
+        participant: [
+          {
+            actor: { reference: `Patient/${clientId}` },
+            status: "accepted"
+          },
+          {
+            actor: { reference: `Practitioner/${doctorId}` },
+            status: "accepted"
+          }
+        ],
+        reasonCode: [
+          { text: purpose }
+        ],
+        location: [
+          { display: selected_branch }
+        ]
+      });
+
+    } catch (error) {
+      console.error("FHIR Appointment Error:", error);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [{
+          severity: "error",
+          code: "exception",
+          diagnostics: "Internal server error"
+        }]
+      });
+    }
+  }
+);
+
 // ===================== default total list or any date  LIST APPOINTMENTS =====================
 router.get(
   "/appointments",
@@ -455,6 +757,172 @@ router.get(
       return res.status(500).json({
         success: false,
         message: "Internal server error",
+      });
+    }
+  }
+);
+
+router.get(
+  "/fhir/appointment",
+  authMiddleware,
+  allowRoles("admin", "client", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const { role, id: userId } = req.user;
+      const adminId = role === "admin" ? req.user.id : req.user.adminId;
+
+      let { date, branch } = req.query;
+      branch = branch ? branch.trim().toLowerCase() : null;
+
+      // ==========================
+      // BASE CONDITIONS
+      // ==========================
+      let baseWhere = `a.admin_id = ?`;
+      let baseParams = [adminId];
+
+      if (role === "client") {
+        baseWhere += " AND a.client_id = ?";
+        baseParams.push(userId);
+      }
+
+      if (role === "doctor") {
+        baseWhere += " AND a.staff_id = ?";
+        baseParams.push(userId);
+      }
+
+      if (role === "receptionist") {
+        const [[receptionist]] = await db.query(
+          `SELECT branch FROM staff 
+           WHERE id=? AND admin_id=? AND role='receptionist' AND status=1`,
+          [userId, adminId]
+        );
+
+        if (!receptionist?.branch) {
+          return res.status(403).json({
+            resourceType: "OperationOutcome",
+            issue: [{
+              severity: "error",
+              code: "forbidden",
+              diagnostics: "Invalid receptionist branch"
+            }]
+          });
+        }
+
+        const recBranch = receptionist.branch.trim().toLowerCase();
+        baseWhere += " AND LOWER(s.branch) = ?";
+        baseParams.push(recBranch);
+        branch = recBranch;
+      }
+
+      if (role === "admin" && branch) {
+        baseWhere += " AND LOWER(s.branch) = ?";
+        baseParams.push(branch);
+      }
+
+      // ==========================
+      // DATE FILTER
+      // ==========================
+      let listWhere = baseWhere;
+      let listParams = [...baseParams];
+
+      if (date) {
+        listWhere += " AND DATE(a.appointment_date) = ?";
+        listParams.push(date);
+      }
+
+      // ==========================
+      // FETCH DATA
+      // ==========================
+      const [rows] = await db.query(
+        `SELECT
+          a.id,
+          a.purpose,
+          a.selected_branch,
+          DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
+          TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
+          TIME_FORMAT(a.to_time, '%H:%i') AS to_time,
+          a.status,
+          c.id AS client_id,
+          c.name AS client_name,
+          s.id AS doctor_id,
+          s.name AS doctor_name
+         FROM appointments a
+         JOIN clients c ON c.id = a.client_id
+         JOIN staff s ON s.id = a.staff_id
+         WHERE ${listWhere}
+         ORDER BY appointment_date DESC, from_time ASC`,
+        listParams
+      );
+
+      // ==========================
+      // FHIR MAPPING
+      // ==========================
+      const entries = rows.map((r) => {
+        const start = `${r.appointment_date}T${r.from_time}`;
+        const end = `${r.appointment_date}T${r.to_time}`;
+
+        // Map status
+        let fhirStatus = "booked";
+        if (r.status === "completed") fhirStatus = "fulfilled";
+        if (r.status === "cancelled") fhirStatus = "cancelled";
+
+        return {
+          resource: {
+            resourceType: "Appointment",
+            id: String(r.id),
+            status: fhirStatus,
+            start,
+            end,
+            participant: [
+              {
+                actor: {
+                  reference: `Patient/${r.client_id}`,
+                  display: r.client_name
+                },
+                status: "accepted"
+              },
+              {
+                actor: {
+                  reference: `Practitioner/${r.doctor_id}`,
+                  display: r.doctor_name
+                },
+                status: "accepted"
+              }
+            ],
+            reasonCode: [
+              { text: r.purpose }
+            ],
+            location: [
+              { display: r.selected_branch }
+            ]
+          }
+        };
+      });
+
+      // ==========================
+      // FHIR BUNDLE RESPONSE
+      // ==========================
+      const bundle = {
+        resourceType: "Bundle",
+        type: "searchset",
+        total: entries.length,
+        entry: entries
+      };
+
+      res.setHeader("Content-Type", "application/fhir+json");
+
+      res.status(200).json(bundle);
+
+    } catch (error) {
+      console.error("FHIR appointments error:", error);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [{
+          severity: "error",
+          code: "exception",
+          diagnostics: "Internal server error"
+        }]
       });
     }
   }
@@ -1283,6 +1751,134 @@ router.put(
   }
 );
 
+router.put(
+  "/fhir/Appointment/:id",
+  authMiddleware,
+  allowRoles("receptionist", "doctor"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      const { role, id: userId, adminId } = req.user;
+
+      // 🔁 Map to FHIR status
+      const statusMap = {
+        assigned: "booked",
+        cancelled: "cancelled",
+        completed: "fulfilled"
+      };
+
+      const fhirStatus = statusMap[status];
+
+      if (!fhirStatus) {
+        return res.status(400).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "invalid",
+            diagnostics: "Invalid status"
+          }]
+        });
+      }
+
+      // 📌 Fetch appointment
+      const [[appointment]] = await db.execute(
+        `SELECT * FROM appointments WHERE id = ? AND admin_id = ?`,
+        [id, adminId]
+      );
+
+      if (!appointment) {
+        return res.status(404).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "not-found",
+            diagnostics: "Appointment not found"
+          }]
+        });
+      }
+
+      // 🔐 Doctor restriction
+      if (role === "doctor" && appointment.staff_id !== userId) {
+        return res.status(403).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "forbidden",
+            diagnostics: "Not allowed"
+          }]
+        });
+      }
+
+      // 🔄 Update DB
+      await db.execute(
+        `UPDATE appointments SET status = ? WHERE id = ?`,
+        [status, id]
+      );
+
+      // 🔓 Free slot if cancelled
+      if (status === "cancelled") {
+        await db.execute(
+          `UPDATE staff_time_slots
+           SET is_booked = 0
+           WHERE staff_id = ?
+             AND slot_date = ?
+             AND slot_time_from = ?
+             AND slot_time_to = ?`,
+          [
+            appointment.staff_id,
+            appointment.appointment_date,
+            appointment.from_time,
+            appointment.to_time,
+          ]
+        );
+      }
+
+      // ✅ FHIR RESPONSE
+      const response = {
+        resourceType: "Appointment",
+        id: String(id),
+
+        status: fhirStatus,
+
+        participant: [
+          {
+            actor: {
+              reference: `Patient/${appointment.client_id}`
+            },
+            status: "accepted"
+          },
+          {
+            actor: {
+              reference: `Practitioner/${appointment.staff_id}`
+            },
+            status: "accepted"
+          }
+        ],
+
+        start: `${appointment.appointment_date}T${appointment.from_time}`,
+        end: `${appointment.appointment_date}T${appointment.to_time}`
+      };
+
+      res.setHeader("Content-Type", "application/fhir+json");
+
+      res.status(200).json(response);
+
+    } catch (err) {
+      console.error("FHIR Appointment update error:", err);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [{
+          severity: "error",
+          code: "exception",
+          diagnostics: "Server error"
+        }]
+      });
+    }
+  }
+);
+
 
 // ===================== DELETE APPOINTMENT =====================
 router.delete(
@@ -1374,6 +1970,107 @@ router.delete(
     } catch (error) {
       console.error("Delete appointment error:", error);
       return res.status(500).json({ success: false, message: "Server error" });
+    }
+  }
+);
+
+router.delete(
+  "/fhir/Appointment/:id",
+  authMiddleware,
+  allowRoles("receptionist", "doctor"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { role, id: userId, adminId } = req.user;
+
+      // 📌 Fetch appointment
+      const [[appointment]] = await db.execute(
+        `SELECT a.id, a.staff_id, a.status, s.branch AS doctor_branch
+         FROM appointments a
+         JOIN staff s ON s.id = a.staff_id
+         WHERE a.id = ? AND a.admin_id = ?`,
+        [id, adminId]
+      );
+
+      if (!appointment) {
+        return res.status(404).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "not-found",
+            diagnostics: "Appointment not found"
+          }]
+        });
+      }
+
+      // 🔐 Doctor restriction
+      if (role === "doctor" && appointment.staff_id !== userId) {
+        return res.status(403).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "forbidden",
+            diagnostics: "Not allowed"
+          }]
+        });
+      }
+
+      // 🧑‍💼 Receptionist restriction
+      if (role === "receptionist") {
+        const [[receptionist]] = await db.execute(
+          `SELECT branch FROM staff
+           WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+          [userId, adminId]
+        );
+
+        if (!receptionist) {
+          return res.status(403).json({
+            resourceType: "OperationOutcome",
+            issue: [{
+              severity: "error",
+              code: "forbidden",
+              diagnostics: "Invalid receptionist"
+            }]
+          });
+        }
+
+        const recBranch = receptionist.branch?.trim().toLowerCase();
+        const docBranch = appointment.doctor_branch?.trim().toLowerCase();
+
+        if (!recBranch || recBranch !== docBranch) {
+          return res.status(403).json({
+            resourceType: "OperationOutcome",
+            issue: [{
+              severity: "error",
+              code: "forbidden",
+              diagnostics: "Branch restriction failed"
+            }]
+          });
+        }
+      }
+
+      // ⚠️ FHIR RULE: Prefer cancel instead of delete
+      // So here we soft delete
+
+      await db.execute(
+        `UPDATE appointments SET status = 'cancelled' WHERE id = ?`,
+        [id]
+      );
+
+      // ✅ FHIR RESPONSE (204 No Content is standard)
+      res.status(204).send();
+
+    } catch (err) {
+      console.error("FHIR delete error:", err);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [{
+          severity: "error",
+          code: "exception",
+          diagnostics: "Server error"
+        }]
+      });
     }
   }
 );

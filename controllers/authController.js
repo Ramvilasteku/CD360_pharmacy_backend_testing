@@ -16,7 +16,12 @@ const transporter = nodemailer.createTransport({
 /* ===================== LOGIN (SEND OTP) ===================== */
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    let { email, password } = req.body;
+
+    // ✅ TRIM INPUTS
+    email = email?.trim();
+    password = password?.trim();
+
     if (!email || !password)
       return res.status(400).json({ message: "Email & password required" });
 
@@ -28,11 +33,12 @@ exports.login = async (req, res) => {
       "SELECT * FROM admins WHERE email = ? LIMIT 1",
       [email]
     );
+
     if (admins.length) {
       user = admins[0];
       role = "admin";
       if (user.status !== 1)
-        return res.status(403).json({ message: "Admin inactive" });
+        return res.status(403).json({ message: "Your account is inactive.Please Contact Admin" });
     }
 
     // STAFF
@@ -41,11 +47,12 @@ exports.login = async (req, res) => {
         "SELECT * FROM staff WHERE email = ? LIMIT 1",
         [email]
       );
+
       if (staff.length) {
         user = staff[0];
-        role = user.role; // doctor | receptionist
+        role = user.role;
         if (user.status !== 1)
-          return res.status(403).json({ message: "Staff inactive" });
+          return res.status(403).json({ message: "Your account is inactive.Please Contact Admin" });
       }
     }
 
@@ -55,18 +62,23 @@ exports.login = async (req, res) => {
         "SELECT * FROM clients WHERE email = ? LIMIT 1",
         [email]
       );
+
       if (clients.length) {
         user = clients[0];
         role = "client";
         if (user.status !== 1)
-          return res.status(403).json({ message: "Client inactive" });
+          return res.status(403).json({ message: "Your account is inactive. Please Contact Admin" });
       }
     }
 
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    if (!user)
+      return res.status(401).json({ message: "Invalid credentials" });
 
+    // ✅ IMPORTANT: compare trimmed password
     const ok = await bcrypt.compare(password, user.password);
-    if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+
+    if (!ok)
+      return res.status(401).json({ message: "Invalid credentials" });
 
     // 🔐 GENERATE OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -158,9 +170,8 @@ exports.verifyOtp = async (req, res) => {
     const { id, role, name, adminId } = req.user;
 
     if (!otp) return res.status(400).json({ message: "OTP required" });
-    
 
-    const [rows] = await db.query(
+    const [otpRows] = await db.query(
       `SELECT * FROM login_otp
        WHERE user_id = ?
        AND role = ?
@@ -169,21 +180,18 @@ exports.verifyOtp = async (req, res) => {
       [id, role, otp]
     );
 
-    if (!rows.length)
+    if (!otpRows.length) {
       return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
 
+    // ✅ Delete OTP
     await db.query("DELETE FROM login_otp WHERE user_id = ? AND role = ?", [
       id,
       role,
     ]);
 
-    // 🔑 FINAL JWT (OTP VERIFIED)
-    const payload = {
-      id,
-      role,
-      name,
-      otpVerified: true,
-    };
+    // 🔑 FINAL TOKEN
+    const payload = { id, role, name, otpVerified: true };
     if (role !== "admin") payload.adminId = adminId;
 
     const newToken = jwt.sign(payload, process.env.JWT_SECRET, {
@@ -192,22 +200,54 @@ exports.verifyOtp = async (req, res) => {
 
     res.cookie("token", newToken, {
       httpOnly: true,
-      secure: true,          // REQUIRED on HTTPS
-      sameSite: "None",      // 🔑 CRITICAL
+      secure: true,
+      sameSite: "None",
       maxAge: 24 * 60 * 60 * 1000,
     });
-    
 
+    // ================= MODULE LOGIC =================
+    let modules = [];
 
+    if (role === "admin") {
+      // ✅ ADMIN → get from admin_modules
+      const [rows] = await db.query(
+        `SELECT module_keys 
+         FROM admin_modules 
+         WHERE admin_id = ? AND status = 1`,
+        [id]
+      );
+
+      if (rows.length > 0) {
+        const data = rows[0].module_keys;
+        modules = Array.isArray(data) ? data : JSON.parse(data);
+      }
+    } else {
+      // ✅ DOCTOR / RECEPTIONIST / CLIENT
+      const [rows] = await db.query(
+        `SELECT module_keys 
+         FROM role_modules 
+         WHERE admin_id = ? AND role = ? AND status = 1`,
+        [adminId, role]
+      );
+
+      if (rows.length > 0) {
+        const data = rows[0].module_keys;
+        modules = Array.isArray(data) ? data : JSON.parse(data);
+      }
+    }
+
+    // ================= FINAL RESPONSE =================
     return res.json({
       message: "OTP verified successfully",
       user: {
         id,
         name,
         role,
-        adminId: role !== "admin" ? adminId : null,
+        adminId: role !== "admin" ? adminId : undefined,
+        modules, // ✅ IMPORTANT
       },
     });
+
   } catch (err) {
     console.error("OTP Verify Error:", err);
     return res.status(500).json({ message: "OTP verification failed" });
@@ -242,4 +282,154 @@ exports.logout = (req, res) => {
   });
 
   return res.json({ message: "Logged out successfully" });
+};
+
+
+// GET /api/modules
+exports.getModules = async (req, res) => {
+  try {
+    const { role, id, adminId } = req.user;
+
+    // ✅ Decide admin_id
+    const admin_id = role === "admin" ? id : adminId;
+
+    const [rows] = await db.query(
+      `SELECT module_keys 
+       FROM admin_modules 
+       WHERE admin_id = ? AND status = 1`,
+      [admin_id]
+    );
+
+    if (!rows.length) {
+      return res.json([]);
+    }
+
+    let moduleKeys = rows[0].module_keys;
+
+    // ✅ Parse JSON if needed
+    if (typeof moduleKeys === "string") {
+      moduleKeys = JSON.parse(moduleKeys);
+    }
+
+    return res.json(moduleKeys);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch modules" });
+  }
+};
+
+
+// GET /api/role-modules/:role
+exports.getRoleModules = async (req, res) => {
+  const { role } = req.params;
+  const { id, role: userRole, adminId } = req.user;
+
+  try {
+    // ✅ Decide admin_id
+    const admin_id = userRole === "admin" ? id : adminId;
+
+    const [rows] = await db.query(
+      `SELECT module_keys 
+       FROM role_modules 
+       WHERE admin_id = ? AND role = ? AND status = 1`,
+      [admin_id, role]
+    ); 
+
+    let modules = [];
+
+    if (rows.length > 0) {
+      const data = rows[0].module_keys;
+
+      try {
+        modules = Array.isArray(data) ? data : JSON.parse(data);
+      } catch (err) {
+        console.error("JSON parse error:", data);
+        modules = [];
+      }
+    }
+
+    res.json({ modules });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Error fetching role modules" });
+  }
+};
+
+// POST /api/role-modules
+
+exports.saveRoleModules = async (req, res) => {
+  const { role, module_keys } = req.body;
+  const { id, role: userRole, adminId } = req.user;
+
+  try {
+    const admin_id = userRole === "admin" ? id : adminId;
+
+    await db.query(
+      `INSERT INTO role_modules (admin_id, role, module_keys)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         module_keys = VALUES(module_keys),
+         updated_at = CURRENT_TIMESTAMP`,
+      [admin_id, role, JSON.stringify(module_keys)]
+    );
+
+    res.json({ message: "Modules saved successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to save modules" });
+  }
+};
+
+
+// PUT /api/role-modules/:role
+exports.updateRoleModules = async (req, res) => {
+  const { role } = req.params;
+  const { module_keys } = req.body;
+  const { id, role: userRole, adminId } = req.user;
+
+  try {
+    const admin_id = userRole === "admin" ? id : adminId;
+
+    const [result] = await db.query(
+      `UPDATE role_modules
+       SET module_keys = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE admin_id = ? AND role = ?`,
+      [JSON.stringify(module_keys), admin_id, role]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Role modules not found" });
+    }
+
+    res.json({ message: "Role modules updated successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Update failed" });
+  }
+};
+
+// DELETE /api/role-modules/:role
+exports.deleteRoleModules = async (req, res) => {
+  const { role } = req.params;
+  const { id, role: userRole, adminId } = req.user;
+
+  try {
+    const admin_id = userRole === "admin" ? id : adminId;
+
+    const [result] = await db.query(
+      `DELETE FROM role_modules 
+       WHERE admin_id = ? AND role = ?`,
+      [admin_id, role]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "No data found to delete" });
+    }
+
+    res.json({ message: "Role modules deleted successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Delete failed" });
+  }
 };

@@ -71,6 +71,15 @@ app.post("/logout", authController.logout);
 app;
 // Test Route
 // app.use("/test", testRoute);
+app.get("/api/modules", authController.loginAuth,authController.getModules);
+
+app.get("/api/role-modules/:role", authController.loginAuth, authController.getRoleModules);
+
+app.post("/api/role-modules", authController.loginAuth,authController.saveRoleModules);
+
+app.put("/api/role-modules/:role", authController.loginAuth,authController.updateRoleModules);
+
+app.delete("/api/role-modules/:role",  authController.loginAuth,authController.deleteRoleModules);
 
 // ---------- PROTECTED ROUTES ----------
 

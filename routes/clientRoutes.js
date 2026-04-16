@@ -194,6 +194,79 @@ router.get(
   }
 );
 
+router.get(
+  "/fhir/patient",
+  authMiddleware,
+  allowRoles("receptionist", "admin"),
+  async (req, res) => {
+    try {
+      const adminId = req.user.adminId ?? req.user.id;
+
+      const [patients] = await db.execute(
+        `SELECT *
+         FROM clients
+         WHERE admin_id = ?
+         ORDER BY id DESC`,
+        [adminId]
+      );
+
+      // Convert DB → FHIR Patient
+      const entries = patients.map((p) => ({
+        resource: {
+          resourceType: "Patient",
+          id: String(p.id),
+          meta: {
+            versionId: "1",
+            lastUpdated: p.created_at || new Date().toISOString()
+          },
+          name: [
+            {
+              use: "official",
+              text: p.name
+            }
+          ],
+          gender: p.gender,
+          birthDate: p.dob,
+          telecom: [
+            p.mobile && { system: "phone", value: p.mobile },
+            p.email && { system: "email", value: p.email }
+          ].filter(Boolean),
+          address: [
+            p.address && { text: p.address }
+          ].filter(Boolean)
+        }
+      }));
+
+      // FHIR Bundle response
+      const bundle = {
+        resourceType: "Bundle",
+        type: "searchset",
+        total: entries.length,
+        entry: entries
+      };
+
+      // Set FHIR headers
+      res.setHeader("Content-Type", "application/fhir+json");
+
+      res.status(200).json(bundle);
+
+    } catch (err) {
+      console.error(err);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [
+          {
+            severity: "error",
+            code: "exception",
+            diagnostics: "Unable to fetch patients"
+          }
+        ]
+      });
+    }
+  }
+);
+
 /* =====================================================
    GET PATIENT (Admin or Receptionist or doctor with params only)
 ===================================================== */
@@ -233,6 +306,87 @@ router.get(
       res.status(500).json({
         success: false,
         message: "Failed to fetch patient",
+      });
+    }
+  }
+);
+
+router.get(
+  "/fhir/patient/:id",
+  authMiddleware,
+  allowRoles("admin", "receptionist", "doctor"),
+  async (req, res) => {
+    try {
+      const patientId = req.params.id;
+      const adminId = req.user.adminId ?? req.user.id;
+
+      const [rows] = await db.execute(
+        `
+        SELECT *
+        FROM clients
+        WHERE id = ? AND admin_id = ?
+        `,
+        [patientId, adminId]
+      );
+
+      if (!rows.length) {
+        // FHIR error response
+        return res.status(404).json({
+          resourceType: "OperationOutcome",
+          issue: [
+            {
+              severity: "error",
+              code: "not-found",
+              diagnostics: "Patient not found"
+            }
+          ]
+        });
+      }
+
+      const p = rows[0];
+
+      // Build FHIR Patient resource
+      const patient = {
+        resourceType: "Patient",
+        id: String(p.id),
+        meta: {
+          versionId: "1",
+          lastUpdated: p.created_at || new Date().toISOString()
+        },
+        name: [
+          {
+            use: "official",
+            text: p.name
+          }
+        ],
+        gender: p.gender,
+        birthDate: p.dob,
+        telecom: [
+          p.mobile && { system: "phone", value: p.mobile },
+          p.email && { system: "email", value: p.email }
+        ].filter(Boolean),
+        address: [
+          p.address && { text: p.address }
+        ].filter(Boolean)
+      };
+
+      // FHIR headers
+      res.setHeader("Content-Type", "application/fhir+json");
+
+      res.status(200).json(patient);
+
+    } catch (err) {
+      console.error("FHIR patient fetch error:", err);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [
+          {
+            severity: "error",
+            code: "exception",
+            diagnostics: "Failed to fetch patient"
+          }
+        ]
       });
     }
   }
@@ -342,6 +496,130 @@ router.put(
   }
 );
 
+router.put(
+  "/fhir/Patient/:id",
+  authMiddleware,
+  allowRoles("admin", "client", "receptionist"),
+  async (req, res) => {
+    try {
+      const user = req.user;
+      const patientId = req.params.id;
+
+      // 🔐 Authorization
+      if (user.role === "client" && patientId != user.id) {
+        return res.status(403).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "forbidden",
+            diagnostics: "Unauthorized"
+          }]
+        });
+      }
+
+      // 📌 Existing patient
+      const [[existing]] = await db.execute(
+        "SELECT * FROM clients WHERE id = ?",
+        [patientId]
+      );
+
+      if (!existing) {
+        return res.status(404).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "not-found",
+            diagnostics: "Patient not found"
+          }]
+        });
+      }
+
+      const fhirData = req.body;
+
+      // 🔄 Map FHIR → DB
+      const name =
+        fhirData.name?.[0]?.text || existing.name;
+
+      const email =
+        fhirData.telecom?.find(t => t.system === "email")?.value ||
+        existing.email;
+
+      const mobile =
+        fhirData.telecom?.find(t => t.system === "phone")?.value ||
+        existing.mobile;
+
+      const address =
+        fhirData.address?.[0]?.text || existing.address;
+
+      const gender =
+        fhirData.gender || existing.gender;
+
+      const dob =
+        fhirData.birthDate || existing.dob;
+
+      let hashedPassword = existing.password;
+
+      // ⚠️ Password is NOT part of FHIR (keep internal)
+      if (req.body.password) {
+        hashedPassword = await bcrypt.hash(req.body.password, 10);
+      }
+
+      // 🔄 Update DB
+      await db.execute(
+        `UPDATE clients SET
+          name=?, email=?, password=?, mobile=?, address=?,
+          gender=?, dob=?
+         WHERE id=?`,
+        [
+          name,
+          email,
+          hashedPassword,
+          mobile,
+          address,
+          gender,
+          dob,
+          patientId,
+        ]
+      );
+
+      // ✅ FHIR RESPONSE
+      const response = {
+        resourceType: "Patient",
+        id: String(patientId),
+
+        name: [{ text: name }],
+
+        telecom: [
+          { system: "phone", value: mobile },
+          { system: "email", value: email }
+        ],
+
+        gender: gender,
+        birthDate: dob,
+
+        address: [
+          { text: address }
+        ]
+      };
+
+      res.setHeader("Content-Type", "application/fhir+json");
+
+      res.status(200).json(response);
+
+    } catch (err) {
+      console.error("FHIR Patient update error:", err);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [{
+          severity: "error",
+          code: "exception",
+          diagnostics: "Server error"
+        }]
+      });
+    }
+  }
+);
 /* =====================================================
    DELETE PATIENT (ADMIN)
 ===================================================== */
@@ -404,6 +682,84 @@ router.delete(
       res.status(500).json({
         success: false,
         message: "Server error",
+      });
+    }
+  }
+);
+
+router.delete(
+  "/fhir/Patient/:id",
+  authMiddleware,
+  allowRoles("admin", "receptionist"),
+  async (req, res) => {
+    try {
+      const patientId = req.params.id;
+      const adminId =
+        req.user.role === "admin" ? req.user.id : req.user.adminId;
+
+      if (!patientId) {
+        return res.status(400).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "invalid",
+            diagnostics: "Invalid patient id"
+          }]
+        });
+      }
+
+      // 📌 Check patient
+      const [[patient]] = await db.execute(
+        "SELECT * FROM clients WHERE id = ?",
+        [patientId]
+      );
+
+      if (!patient) {
+        return res.status(404).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "not-found",
+            diagnostics: "Patient not found"
+          }]
+        });
+      }
+
+      // 🔐 Ownership check
+      if (patient.admin_id !== adminId) {
+        return res.status(403).json({
+          resourceType: "OperationOutcome",
+          issue: [{
+            severity: "error",
+            code: "forbidden",
+            diagnostics: "Not authorized"
+          }]
+        });
+      }
+
+      // ❌ DO NOT DELETE → Soft delete
+      await db.execute(
+        "UPDATE clients SET status = 0 WHERE id = ?",
+        [patientId]
+      );
+
+      // ✅ FHIR RESPONSE (Minimal)
+      res.status(200).json({
+        resourceType: "Patient",
+        id: String(patientId),
+        active: false
+      });
+
+    } catch (err) {
+      console.error("FHIR Patient delete error:", err);
+
+      res.status(500).json({
+        resourceType: "OperationOutcome",
+        issue: [{
+          severity: "error",
+          code: "exception",
+          diagnostics: "Server error"
+        }]
       });
     }
   }
