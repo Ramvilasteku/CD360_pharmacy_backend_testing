@@ -35,7 +35,8 @@ jobs:
             git config --global --add safe.directory /home/ubuntu/Healthcareserver
 
             echo "📥 Pulling latest code..."
-            git pull origin master
+            git fetch origin
+            git reset --hard origin/master
 
             echo "📦 Installing dependencies..."
             npm install --production
