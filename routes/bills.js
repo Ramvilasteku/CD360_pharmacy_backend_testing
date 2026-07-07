@@ -20,143 +20,357 @@ const safeParse = (value) => {
 /* =========================================================
    🧾 CREATE BILL
 ========================================================= */
-router.post(
-  "/bills",
-  authMiddleware,
-  allowRoles("receptionist"),
-  async (req, res) => {
-    try {
-      const receptionistId = req.user.id;
-      const adminId        = req.user.adminId;
+router.post( 
 
-      let {
-        appointment_id,
-        prescription_id,
-        subtotal,
-        tax = 0,
-        total_amount,
-        notes,
-        bill_breakdown_json, // ✅ NEW
-      } = req.body;
+  "/bills", 
 
-      appointment_id  = normalizeNumber(appointment_id);
-      prescription_id = normalizeNumber(prescription_id);
-      subtotal        = normalizeNumber(subtotal);
-      tax             = normalizeNumber(tax);
-      total_amount    = normalizeNumber(total_amount);
-      notes           = normalizeString(notes);
+  authMiddleware, 
 
-      if (!appointment_id || !subtotal || !total_amount) {
-        return res.status(400).json({
-          success: false,
-          message: "Missing required fields: appointment_id, subtotal, total_amount",
-        });
-      }
+  allowRoles("receptionist"), 
 
-      /* 1️⃣ Validate appointment */
-      const [appointments] = await db.query(
-        `SELECT id, client_id, status FROM appointments WHERE id = ? AND admin_id = ?`,
-        [appointment_id, adminId]
-      );
+  async (req, res) => { 
 
-      if (!appointments.length)
-        return res.status(404).json({ success: false, message: "Appointment not found" });
+    try { 
 
-      if (appointments[0].status !== "completed")
-        return res.status(400).json({
-          success: false,
-          message: "Bill can only be created after appointment is completed",
-        });
+      const receptionistId = req.user.id; 
 
-      /* 2️⃣ One bill per appointment */
-      const [existing] = await db.query(
-        `SELECT id FROM bills WHERE appointment_id = ? AND admin_id = ?`,
-        [appointment_id, adminId]
-      );
+      const adminId        = req.user.adminId; 
 
-      if (existing.length)
-        return res.status(409).json({
-          success: false,
-          message: "A bill already exists for this appointment",
-        });
+ 
 
-      /* 3️⃣ Validate prescription */
-      if (prescription_id) {
-        const [rxRows] = await db.query(
-          `SELECT id FROM prescriptions WHERE id = ? AND admin_id = ?`,
-          [prescription_id, adminId]
-        );
-        if (!rxRows.length)
-          return res.status(404).json({
-            success: false,
-            message: "Prescription not found or access denied",
-          });
-      }
+     let { 
 
-      /* 4️⃣ Serialize breakdown JSON */
-      const breakdownJson = bill_breakdown_json
-        ? JSON.stringify(bill_breakdown_json)
-        : null;
+      appointment_id, 
 
-      /* 5️⃣ Create bill — ✅ now includes bill_breakdown_json */
-      const [result] = await db.query(
-        `INSERT INTO bills
-           (admin_id, appointment_id, prescription_id, client_id, staff_id,
-            subtotal, tax, total_amount, notes, bill_breakdown_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          adminId,
-          appointment_id,
-          prescription_id || null,
-          appointments[0].client_id,
-          receptionistId,
-          subtotal,
-          tax,
-          total_amount,
-          notes,
-          breakdownJson, // ✅
-        ]
-      );
+      prescription_id, 
 
-      const billId = result.insertId;
+      subtotal, 
 
-      /* 6️⃣ Notification */
-      const title   = "New Bill Created";
-      const message = `Your bill for appointment #${appointment_id} has been generated. Total: ₹${total_amount}.`;
+      discount_percentage = 0, 
 
-      const [notifResult] = await db.query(
-        `INSERT INTO notifications
-           (admin_id, sender_role, sender_id, title, message, type, created_at)
-         VALUES (?, 'receptionist', ?, ?, ?, 'general', NOW())`,
-        [adminId, receptionistId, title, message]
-      );
+      tax_percentage = 0, 
 
-      const notification_id = notifResult.insertId;
+      notes, 
 
-      await db.query(
-        `INSERT INTO notification_receivers (notification_id, receiver_role, receiver_id, is_read)
-         VALUES (?, 'client', ?, 0)`,
-        [notification_id, appointments[0].client_id]
-      );
+      bill_breakdown_json, 
 
-      await db.query(
-        `INSERT INTO notification_receivers (notification_id, receiver_role, receiver_id, is_read)
-         VALUES (?, 'admin', ?, 0)`,
-        [notification_id, adminId]
-      );
+    }  = req.body; 
 
-      return res.status(201).json({
-        success: true,
-        message: "Bill created successfully",
-        bill_id: billId,
-      });
+ 
 
-    } catch (error) {
-      console.error("CREATE BILL ERROR:", error);
-      res.status(500).json({ success: false, message: "Internal server error" });
-    }
-  }
-);
+      appointment_id = normalizeNumber(appointment_id); 
+
+      prescription_id = normalizeNumber(prescription_id); 
+
+      subtotal = normalizeNumber(subtotal); 
+
+ 
+
+      discount_percentage = normalizeNumber(discount_percentage) ?? 0; 
+
+      tax_percentage = normalizeNumber(tax_percentage) ?? 0; 
+
+ 
+
+      notes = normalizeString(notes); 
+
+ 
+
+      const discountAmount = 
+
+      (subtotal * discount_percentage) / 100; 
+
+ 
+
+      const taxableAmount = 
+
+        subtotal - discountAmount; 
+
+ 
+
+      const taxAmount = 
+
+        (taxableAmount * tax_percentage) / 100; 
+
+ 
+
+      const totalAmount = 
+
+        taxableAmount + taxAmount; 
+
+     
+
+ 
+
+       
+
+     
+
+ 
+
+     
+
+ 
+
+   if (!appointment_id || subtotal <= 0) {  
+
+        return res.status(400).json({ 
+
+          success: false, 
+
+          message: "Missing required fields: appointment_id, subtotal, total_amount", 
+
+        }); 
+
+      } 
+
+ 
+
+      /* 1️⃣ Validate appointment exists */ 
+
+      const [appointments] = await db.query( 
+
+        `SELECT id, client_id 
+
+        FROM appointments 
+
+        WHERE id = ? AND admin_id = ?`, 
+
+        [appointment_id, adminId] 
+
+      ); 
+
+ 
+
+      if (!appointments.length) { 
+
+        return res.status(404).json({ 
+
+          success: false, 
+
+          message: "Appointment not found", 
+
+        }); 
+
+      } 
+
+ 
+
+      /* 2️⃣ One bill per appointment */ 
+
+      const [existing] = await db.query( 
+
+        `SELECT id FROM bills WHERE appointment_id = ? AND admin_id = ?`, 
+
+        [appointment_id, adminId] 
+
+      ); 
+
+ 
+
+      if (existing.length) 
+
+        return res.status(409).json({ 
+
+          success: false, 
+
+          message: "A bill already exists for this appointment", 
+
+        }); 
+
+ 
+
+      /* 3️⃣ Validate prescription */ 
+
+      if (prescription_id) { 
+
+        const [rxRows] = await db.query( 
+
+          `SELECT id FROM prescriptions WHERE id = ? AND admin_id = ?`, 
+
+          [prescription_id, adminId] 
+
+        ); 
+
+        if (!rxRows.length) 
+
+          return res.status(404).json({ 
+
+            success: false, 
+
+            message: "Prescription not found or access denied", 
+
+          }); 
+
+      } 
+
+ 
+
+      /* 4️⃣ Serialize breakdown JSON */ 
+
+      const breakdownJson = bill_breakdown_json 
+
+        ? JSON.stringify(bill_breakdown_json) 
+
+        : null; 
+
+ 
+
+      /* 5️⃣ Create bill — ✅ now includes bill_breakdown_json */ 
+
+      const [result] = await db.query( 
+
+        `INSERT INTO bills 
+
+        ( 
+
+          admin_id, 
+
+          appointment_id, 
+
+          prescription_id, 
+
+          client_id, 
+
+          staff_id, 
+
+          subtotal, 
+
+          discount_percentage, 
+
+          discount_amount, 
+
+          tax_percentage, 
+
+          tax_amount, 
+
+          total_amount, 
+
+          notes, 
+
+          bill_breakdown_json 
+
+        ) 
+
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
+
+        [ 
+
+          adminId, 
+
+          appointment_id, 
+
+          prescription_id || null, 
+
+          appointments[0].client_id, 
+
+          receptionistId, 
+
+ 
+
+          subtotal, 
+
+ 
+
+          discount_percentage, 
+
+          discountAmount, 
+
+ 
+
+          tax_percentage, 
+
+          taxAmount, 
+
+ 
+
+          totalAmount, 
+
+ 
+
+          notes, 
+
+          breakdownJson, 
+
+        ] 
+
+      ); 
+
+      const billId = result.insertId; 
+
+ 
+
+      /* 6️⃣ Notification */ 
+
+      const title   = "New Bill Created"; 
+
+      const message = `Your bill for appointment #${appointment_id} has been generated. Total: ₹${totalAmount.toFixed(2)}.`; 
+
+      const [notifResult] = await db.query( 
+
+        `INSERT INTO notifications 
+
+           (admin_id, sender_role, sender_id, title, message, type, created_at) 
+
+         VALUES (?, 'receptionist', ?, ?, ?, 'general', NOW())`, 
+
+        [adminId, receptionistId, title, message] 
+
+      ); 
+
+ 
+
+      const notification_id = notifResult.insertId; 
+
+ 
+
+      await db.query( 
+
+        `INSERT INTO notification_receivers (notification_id, receiver_role, receiver_id, is_read) 
+
+         VALUES (?, 'client', ?, 0)`, 
+
+        [notification_id, appointments[0].client_id] 
+
+      ); 
+
+ 
+
+      await db.query( 
+
+        `INSERT INTO notification_receivers (notification_id, receiver_role, receiver_id, is_read) 
+
+         VALUES (?, 'admin', ?, 0)`, 
+
+        [notification_id, adminId] 
+
+      ); 
+
+ 
+
+      return res.status(201).json({ 
+
+        success: true, 
+
+        message: "Bill created successfully", 
+
+        bill_id: billId, 
+
+      }); 
+
+ 
+
+    } catch (error) { 
+
+      console.error("CREATE BILL ERROR:", error); 
+
+      res.status(500).json({ success: false, message: "Internal server error" }); 
+
+    } 
+
+  } 
+
+); 
 
 /* =========================================================
    📄 GET ALL BILLS
@@ -169,36 +383,44 @@ router.get(
     try {
       const { role, id: userId } = req.user;
       const adminId = resolveAdminId(req.user);
-
+ 
       let { client_id, branch, date } = req.query;
       client_id = normalizeNumber(client_id);
       branch    = normalizeLower(branch);
       date      = normalizeString(date);
-
+ 
       let where  = ["b.admin_id = ?"];
       let params = [adminId];
-
+ 
       if (role === "client") { where.push("b.client_id = ?"); params.push(userId); }
       if ((role === "admin" || role === "receptionist") && client_id) {
         where.push("b.client_id = ?"); params.push(client_id);
       }
       if (date)   { where.push("DATE(b.created_at) = ?"); params.push(date); }
       if (branch) { where.push("LOWER(s.branch) = ?");    params.push(branch); }
-
+ 
       const [rows] = await db.query(
         `SELECT
-           b.id               AS bill_id,
-           b.appointment_id,
-           b.prescription_id,
-           b.client_id,
-           b.staff_id,
-           b.subtotal,
-           b.tax,
-           b.total_amount,
-           b.bill_status,
-           b.notes,
-           b.created_at,
-           b.bill_breakdown_json,
+            b.id AS bill_id,
+            b.appointment_id,
+            b.prescription_id,
+            b.client_id,
+            b.staff_id,
+ 
+            b.subtotal,
+ 
+            b.discount_percentage,
+            b.discount_amount,
+ 
+            b.tax_percentage,
+            b.tax_amount,
+ 
+            b.total_amount,
+ 
+            b.bill_status,
+            b.notes,
+            b.created_at,
+            b.bill_breakdown_json,
            c.name             AS client_name,
            s.name             AS staff_name,
            s.role             AS staff_role,
@@ -216,7 +438,7 @@ router.get(
          ORDER BY b.created_at DESC`,
         params
       );
-
+ 
       const bills = rows.map((row) => ({
         ...row,
         // ✅ Use bill_breakdown_json if available, else fallback to prescription JSON
@@ -228,9 +450,9 @@ router.get(
         medicines_json:         undefined,
         tests_json:             undefined,
       }));
-
+ 
       res.status(200).json({ success: true, role, count: bills.length, data: bills });
-
+ 
     } catch (error) {
       console.error("GET BILLS ERROR:", error);
       res.status(500).json({ success: false, message: "Internal server error" });
@@ -337,21 +559,68 @@ router.put(
   allowRoles("admin", "receptionist"),
   async (req, res) => {
     const connection = await db.getConnection();
+ 
+   
     try {
       await connection.beginTransaction();
-
+ 
       const bill_id = Number(req.params.bill_id);
       const adminId = resolveAdminId(req.user);
-
-      const {
+ 
+      let {
         subtotal,
-        tax,
-        total_amount,
-        bill_status,          // ← now accepted from frontend
+        discount_percentage = 0,
+        tax_percentage = 0,
+        bill_status,
         notes,
         bill_breakdown_json,
-      } = req.body;
-
+    } = req.body;
+ 
+if (
+  discount_percentage < 0 ||
+  discount_percentage > 100 ||
+  tax_percentage < 0 ||
+  tax_percentage > 100
+) {
+  await connection.rollback();
+  return res.status(400).json({
+    success: false,
+    message: "Discount and tax percentage must be between 0 and 100.",
+  });
+}
+ 
+subtotal = normalizeNumber(subtotal);
+ 
+discount_percentage = normalizeNumber(discount_percentage) ?? 0;
+ 
+tax_percentage = normalizeNumber(tax_percentage) ?? 0;
+ 
+notes = normalizeString(notes);
+bill_status = normalizeString(bill_status);
+ 
+        if (subtotal <= 0) {
+  await connection.rollback();
+  return res.status(400).json({
+    success: false,
+    message: "Subtotal must be greater than 0",
+  });
+}
+ 
+ const discountAmount = Number(
+  ((subtotal * discount_percentage) / 100).toFixed(2)
+);
+ 
+const taxableAmount = subtotal - discountAmount;
+ 
+const taxAmount = Number(
+  ((taxableAmount * tax_percentage) / 100).toFixed(2)
+);
+ 
+const totalAmount = Number(
+  (taxableAmount + taxAmount).toFixed(2)
+);
+ 
+ 
       /* ── Validate status value ── */
       if (bill_status && !VALID_STATUSES.includes(bill_status)) {
         await connection.rollback();
@@ -360,18 +629,18 @@ router.put(
           message: `Invalid bill_status. Must be one of: ${VALID_STATUSES.join(", ")}`,
         });
       }
-
+ 
       /* ── Fetch current row ── */
       const [rows] = await connection.query(
         `SELECT bill_status FROM bills WHERE id = ? AND admin_id = ?`,
         [bill_id, adminId]
       );
-
+ 
       if (!rows.length) {
         await connection.rollback();
         return res.status(404).json({ success: false, message: "Bill not found" });
       }
-
+ 
       /* ── Block edits on already-Paid bills ── */
       if (rows[0].bill_status === "Paid") {
         await connection.rollback();
@@ -380,39 +649,65 @@ router.put(
           message: "Paid bills cannot be edited",
         });
       }
-
+ 
       /* ── Resolve final status: use submitted value or keep existing ── */
+      bill_status = normalizeString(bill_status);
+ 
       const resolvedStatus = bill_status || rows[0].bill_status;
-
+ 
       /* ── Update ── */
       await connection.query(
         `UPDATE bills
-         SET subtotal            = ?,
-             tax                 = ?,
-             total_amount        = ?,
-             bill_status         = ?,
-             notes               = ?,
-             bill_breakdown_json = ?
-         WHERE id = ? AND admin_id = ?`,
+    SET
+    subtotal = ?,
+    discount_percentage = ?,
+    discount_amount = ?,
+    tax_percentage = ?,
+    tax_amount = ?,
+    total_amount = ?,
+    bill_status = ?,
+    notes = ?,
+    bill_breakdown_json = ?
+    WHERE id = ? AND admin_id = ?`,
         [
-          subtotal,
-          tax,
-          total_amount,
-          resolvedStatus,
-          notes || null,
-          bill_breakdown_json ? JSON.stringify(bill_breakdown_json) : null,
-          bill_id,
-          adminId,
-        ]
+  subtotal,
+ 
+  discount_percentage,
+  discountAmount,
+ 
+  tax_percentage,
+  taxAmount,
+ 
+  totalAmount,
+ 
+  resolvedStatus,
+ 
+  notes || null,
+ 
+  bill_breakdown_json
+    ? JSON.stringify(bill_breakdown_json)
+    : null,
+ 
+  bill_id,
+  adminId,
+]
       );
-
+ 
       await connection.commit();
       res.json({
         success: true,
         message: "Bill updated successfully",
-        data: { bill_status: resolvedStatus },
+        data: {
+        subtotal,
+        discount_percentage,
+        discount_amount: discountAmount,
+        tax_percentage,
+        tax_amount: taxAmount,
+        total_amount: totalAmount,
+        bill_status: resolvedStatus,
+      },
       });
-
+ 
     } catch (err) {
       await connection.rollback();
       console.error("UPDATE BILL ERROR:", err);

@@ -16,6 +16,9 @@ const bill = require("./routes/bills.js");
 const medicinesRoutes = require("./routes/medicinesRoutes.js");
 const consultationTypesRoute = require("./routes/consultationTypes.js");
 const clientPrescriptionsRouter = require("./routes/clientPrescriptionsRoute");
+const landingAdmin = require("./routes/admin.js");
+const landingContact = require("./routes/contact.js");
+const landingDemo = require("./routes/demo.js");
 
 // Socket initializer
 
@@ -110,6 +113,11 @@ app.use("/api/tests", testsRoutes);
 app.use("/api/prescriptions",prescription );
 app.use("/api/consultation-types", consultationTypesRoute);
 app.use("/api/client/prescriptions", clientPrescriptionsRouter);
+
+// Landing Page Routes
+app.use("/landingpage/admin", landingAdmin);
+app.use("/landingpage/contact", landingContact);
+app.use("/landingpage/demo", landingDemo);
 
 // ---------- START HTTP + WS SERVER ----------
 server.listen(5000, () => {

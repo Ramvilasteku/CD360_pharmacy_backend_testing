@@ -6,12 +6,12 @@ const PDFDocument = require("pdfkit");
 const db         = require("../db");
 const { authMiddleware } = require("../middlewares/authMiddleware");
 const { allowRoles }     = require("../middlewares/roleMiddleware");
-
+ 
 /* ─────────────────────────────────────────────────────────────────
    CONSTANTS
 ───────────────────────────────────────────────────────────────── */
 const RS = "Rs.";
-
+ 
 const C = {
   primary:    "#3f6f7a",
   accent:     "#3f6f7a",
@@ -26,20 +26,20 @@ const C = {
   orange:     "#d35400",
   grey:       "#757575",
 };
-
+ 
 const PAGE_W   = 595.28;
 const PAGE_H   = 841.89;
 const M_LEFT   = 45;
 const M_RIGHT  = PAGE_W - 45;
 const USABLE_W = M_RIGHT - M_LEFT;
-
+ 
 const COL = {
   item:  { x: M_LEFT + 6,   w: 230 },
   qty:   { x: M_LEFT + 255, w: 45  },
   unit:  { x: M_LEFT + 308, w: 80  },
   total: { x: M_LEFT + 400, w: USABLE_W - 400 - 6 },
 };
-
+ 
 /* ─────────────────────────────────────────────────────────────────
    HELPERS
 ───────────────────────────────────────────────────────────────── */
@@ -48,23 +48,23 @@ const safeParse = (v) => {
   if (typeof v === "string") { try { return JSON.parse(v); } catch { return null; } }
   return v;
 };
-
+ 
 const fmt = (n) => `${RS} ${Number(n || 0).toFixed(2)}`;
-
+ 
 const statusColor = (s) =>
   ({ Paid: C.green, Pending: C.orange, Overdue: C.red, Cancelled: C.grey }[s] || C.mid);
-
+ 
 const filledRect = (doc, x, y, w, h, color) => doc.rect(x, y, w, h).fill(color);
-
+ 
 const roundedRect = (doc, x, y, w, h, r, fill, stroke) => {
   doc.roundedRect(x, y, w, h, r);
   if (fill)   doc.fillColor(fill).fill();
   if (stroke) doc.strokeColor(stroke).lineWidth(0.5).stroke();
 };
-
+ 
 const hLine = (doc, y, color = C.border, lw = 0.5) =>
   doc.moveTo(M_LEFT, y).lineTo(M_RIGHT, y).strokeColor(color).lineWidth(lw).stroke();
-
+ 
 /* ─────────────────────────────────────────────────────────────────
    ROUTE
 ───────────────────────────────────────────────────────────────── */
@@ -77,15 +77,16 @@ router.get(
       const { invoiceId } = req.params;
       if (!invoiceId || isNaN(invoiceId))
         return res.status(400).json({ message: "Invalid invoice ID" });
-
+ 
       const [rows] = await db.execute(
         `SELECT
            b.id               AS bill_id,
            b.appointment_id,
            b.subtotal,
-           b.tax,
+           b.tax_amount,
            b.total_amount,
            b.bill_status,
+           b.discount_amount,
            b.notes,
            b.created_at,
            b.bill_breakdown_json,
@@ -113,24 +114,24 @@ router.get(
          WHERE b.id = ?`,
         [invoiceId]
       );
-
+ 
       if (!rows.length)
         return res.status(404).json({ message: "Invoice not found" });
-
+ 
       const inv = rows[0];
-
+ 
       const breakdown     = safeParse(inv.bill_breakdown_json);
       const consultations = breakdown?.consultations ?? safeParse(inv.consultation_type_json) ?? [];
       const medicines     = breakdown?.medicines     ?? safeParse(inv.medicines_json)         ?? [];
       const tests         = breakdown?.tests         ?? safeParse(inv.tests_json)             ?? [];
       const hasBreakdown  = consultations.length + medicines.length + tests.length > 0;
-
+ 
       /* ── PDF init ── */
       const doc = new PDFDocument({ margin: 0, size: "A4", bufferPages: true });
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename=invoice_${inv.bill_id}.pdf`);
       doc.pipe(res);
-
+ 
       /* ──────────────────────────────────────────────────────────
          LAYOUT CONSTANTS
       ────────────────────────────────────────────────────────── */
@@ -139,96 +140,96 @@ router.get(
       const FOOTER_RESERVE = FOOTER_H + 10;
       const MAX_Y          = PAGE_H - FOOTER_RESERVE;
       const TH             = 22;   // table column-header row height
-
+ 
       const invNum      = `#INV-${String(inv.bill_id).padStart(5, "0")}`;
       const statusLabel = (inv.bill_status || "Pending").toUpperCase();
-
+ 
       // Resolve logo path once
       const logoFilePath = inv.company_logo
         ? path.join(__dirname, "..", "Images", inv.company_logo)
         : null;
       const hasLogo = logoFilePath && fs.existsSync(logoFilePath);
-
+ 
       /* ──────────────────────────────────────────────────────────
          drawPageHeader(offsetY)
          Draws the navy header band at offsetY on the CURRENT page.
          Returns the Y coordinate immediately below the band.
       ────────────────────────────────────────────────────────── */
      const drawPageHeader = (offsetY) => {
-  // Header background
-  filledRect(doc, 0, offsetY, PAGE_W, HEADER_H, C.primary);
-  filledRect(doc, 0, offsetY, PAGE_W, 3, C.accent);
-
-  // Logo
-  let textX = M_LEFT;
-  if (hasLogo) {
-    doc.image(logoFilePath, M_LEFT, offsetY + 8, { fit: [36, 36] });
-    textX = M_LEFT + 44;
-  }
-
-  /* ── COMPANY NAME ── */
-doc.font("Helvetica-Bold")
-  .fontSize(13)
-  .fillColor(C.headerText)
-  .text(inv.company_name || "", textX, offsetY + 8, {
-    width: 240,
-  });
-
-/* ── ADDRESS ── */
-if (inv.admin_address) {
-  doc.font("Helvetica")
-    .fontSize(7.5)
-    .fillColor("rgba(255,255,255,0.85)")
-    .text(inv.admin_address, textX, offsetY + 26, { // ⬅️ was 24
-      width: 240,
-      lineGap: 2, // ⬅️ adds breathing room between wrapped lines
-    });
-}
-
-/* ── EMAIL + PHONE ── */
-const contact = [inv.admin_email, inv.admin_mobile].filter(Boolean).join("  |  ");
-if (contact) {
-  doc.font("Helvetica")
-    .fontSize(7)
-    .fillColor("rgba(255,255,255,0.65)")
-    .text(contact, textX, offsetY + 44, { // ⬅️ was 40
-      width: 240,
-    });
-}
-
-  /* ── RIGHT SIDE TITLE ── */
-  doc.font("Helvetica-Bold")
-    .fontSize(18)
-    .fillColor(C.headerText)
-    .text("INVOICE", 0, offsetY + 10, {
-      align: "right",
-      width: M_RIGHT,
-    });
-
-  doc.font("Helvetica")
-    .fontSize(9)
-    .fillColor("rgba(255,255,255,0.75)")
-    .text(invNum, 0, offsetY + 32, {
-      align: "right",
-      width: M_RIGHT,
-    });
-
-  /* ── STATUS LABEL ── */
-  const pillW = 62;
-  const pillX = M_RIGHT - pillW;
-  const pillY = offsetY + HEADER_H - 18;
-
-  // doc.font("Helvetica-Bold")
-  //   .fontSize(7.5)
-  //   .fillColor(C.headerText)
-  //   .text(statusLabel, pillX, pillY, {
-  //     width: pillW,
-  //     align: "center",
-  //   });
-
-  return offsetY + HEADER_H;
-};
-
+      // Header background
+      filledRect(doc, 0, offsetY, PAGE_W, HEADER_H, C.primary);
+      filledRect(doc, 0, offsetY, PAGE_W, 3, C.accent);
+ 
+      // Logo
+      let textX = M_LEFT;
+      if (hasLogo) {
+        doc.image(logoFilePath, M_LEFT, offsetY + 8, { fit: [36, 36] });
+        textX = M_LEFT + 44;
+      }
+ 
+       /* ── COMPANY NAME ── */
+      doc.font("Helvetica-Bold")
+        .fontSize(13)
+        .fillColor(C.headerText)
+        .text(inv.company_name || "", textX, offsetY + 8, {
+          width: 240,
+        });
+ 
+      /* ── ADDRESS ── */
+      if (inv.admin_address) {
+        doc.font("Helvetica")
+          .fontSize(7.5)
+          .fillColor("rgba(255,255,255,0.85)")
+          .text(inv.admin_address, textX, offsetY + 26, { // ⬅️ was 24
+            width: 240,
+            lineGap: 2, // ⬅️ adds breathing room between wrapped lines
+          });
+      }
+ 
+      /* ── EMAIL + PHONE ── */
+      const contact = [inv.admin_email, inv.admin_mobile].filter(Boolean).join("  |  ");
+      if (contact) {
+        doc.font("Helvetica")
+          .fontSize(7)
+          .fillColor("rgba(255,255,255,0.65)")
+          .text(contact, textX, offsetY + 44, { // ⬅️ was 40
+            width: 240,
+          });
+      }
+ 
+      /* ── RIGHT SIDE TITLE ── */
+      doc.font("Helvetica-Bold")
+        .fontSize(18)
+        .fillColor(C.headerText)
+        .text("INVOICE", 0, offsetY + 10, {
+          align: "right",
+          width: M_RIGHT,
+        });
+ 
+      doc.font("Helvetica")
+        .fontSize(9)
+        .fillColor("rgba(255,255,255,0.75)")
+        .text(invNum, 0, offsetY + 32, {
+          align: "right",
+          width: M_RIGHT,
+        });
+ 
+        /* ── STATUS LABEL ── */
+        const pillW = 62;
+        const pillX = M_RIGHT - pillW;
+        const pillY = offsetY + HEADER_H - 18;
+ 
+        // doc.font("Helvetica-Bold")
+        //   .fontSize(7.5)
+        //   .fillColor(C.headerText)
+        //   .text(statusLabel, pillX, pillY, {
+        //     width: pillW,
+        //     align: "center",
+        //   });
+ 
+        return offsetY + HEADER_H;
+      };
+ 
       /* ──────────────────────────────────────────────────────────
          drawTableHeader(y)
          Draws the blue column-label row at y.
@@ -243,17 +244,17 @@ if (contact) {
            .text("AMOUNT",             COL.total.x, y + 7, { width: COL.total.w, align: "right" });
         return y + TH;
       };
-
+ 
       /* ══════════════════════════════════════════════════════════
          PAGE 1 — draw header + info cards + begin table
       ══════════════════════════════════════════════════════════ */
       let Y = drawPageHeader(0);     // Y = HEADER_H after this
-
+ 
       // ── Info cards ──────────────────────────────────────────
       const INFO_Y = Y + 14;
       const CARD_W = (USABLE_W / 2) - 6;
       const CARD_H = 96;
-
+ 
       // Left card — Billed To
       roundedRect(doc, M_LEFT, INFO_Y, CARD_W, CARD_H, 5, "#f8fafd", C.border);
       doc.font("Helvetica-Bold").fontSize(7.5).fillColor(C.accent)
@@ -268,13 +269,13 @@ if (contact) {
         doc.font("Helvetica").fontSize(9).fillColor(C.mid)
            .text(line, M_LEFT + 10, INFO_Y + 38 + i * 14, { width: CARD_W - 20 })
       );
-
+ 
       // Right card — Invoice Details
       const RCARDX = M_LEFT + CARD_W + 12;
       roundedRect(doc, RCARDX, INFO_Y, CARD_W, CARD_H, 5, "#f8fafd", C.border);
       doc.font("Helvetica-Bold").fontSize(7.5).fillColor(C.accent)
          .text("INVOICE DETAILS", RCARDX + 10, INFO_Y + 10, { characterSpacing: 1 });
-
+ 
       const detailDate = new Date(inv.created_at).toLocaleDateString("en-IN", {
         day: "2-digit", month: "short", year: "numeric",
       });
@@ -291,16 +292,16 @@ if (contact) {
         doc.font("Helvetica").fontSize(9).fillColor(C.mid)
            .text(`: ${v}`, RCARDX + 65, ry, { width: CARD_W - 75 });
       });
-
+ 
       // ── Table starts below info cards ───────────────────────
       Y = INFO_Y + CARD_H + 12;
       Y = drawTableHeader(Y);
-
+ 
       /* ══════════════════════════════════════════════════════════
          TABLE ROW HELPERS
       ══════════════════════════════════════════════════════════ */
       let altRow = false;
-
+ 
       // If content is about to overflow, start a new page with header + table-header
       const ensureSpace = (need = 22) => {
         if (Y + need > MAX_Y) {
@@ -311,7 +312,7 @@ if (contact) {
           altRow = false;
         }
       };
-
+ 
       const drawSection = (label) => {
         ensureSpace(18);
         filledRect(doc, M_LEFT, Y, USABLE_W, 18, C.accentLight);
@@ -319,15 +320,15 @@ if (contact) {
            .text(label, COL.item.x, Y + 5, { characterSpacing: 0.5 });
         Y += 18;
       };
-
+ 
       const drawRow = (name, qty, unitPrice, amount) => {
         const estLines = Math.ceil((name || "").length / 38) || 1;
         const rowH     = Math.max(22, estLines * 13 + 8);
         ensureSpace(rowH);
-
+ 
         if (altRow) filledRect(doc, M_LEFT, Y, USABLE_W, rowH, C.rowAlt);
         filledRect(doc, M_LEFT, Y, 3, rowH, altRow ? C.accentLight : "#e8f0fe");
-
+ 
         doc.font("Helvetica").fontSize(9.5).fillColor(C.dark)
            .text(name || "—", COL.item.x, Y + 6, { width: COL.item.w, lineGap: 1 });
         doc.font("Helvetica").fontSize(9.5).fillColor(C.mid)
@@ -337,13 +338,13 @@ if (contact) {
                  COL.unit.x,  Y + 6, { width: COL.unit.w, align: "right"  })
            .text(fmt(amount || 0),
                  COL.total.x, Y + 6, { width: COL.total.w, align: "right" });
-
+ 
         Y += rowH;
         doc.moveTo(M_LEFT, Y).lineTo(M_RIGHT, Y)
            .strokeColor(C.border).lineWidth(0.3).stroke();
         altRow = !altRow;
       };
-
+ 
       /* ══════════════════════════════════════════════════════════
          POPULATE ROWS
       ══════════════════════════════════════════════════════════ */
@@ -368,7 +369,7 @@ if (contact) {
       } else {
         drawRow("Consultation / Services", null, null, inv.subtotal);
       }
-
+ 
       /* ══════════════════════════════════════════════════════════
          TOTALS BLOCK
       ══════════════════════════════════════════════════════════ */
@@ -376,11 +377,11 @@ if (contact) {
       Y += 10;
       hLine(doc, Y, C.border, 0.5);
       Y += 12;
-
+ 
       const TOT_X = M_RIGHT - 200;
       const TOT_W = 200;
       const ROW_H = 18;
-
+ 
       const totals = [];
       if (hasBreakdown) {
         const cT = consultations.reduce((s, c) => s + Number(c.cost || 0), 0);
@@ -391,15 +392,22 @@ if (contact) {
         if (tests.length)         totals.push(["Tests",        tT]);
       }
       totals.push(["Subtotal", Number(inv.subtotal || 0)]);
-      totals.push(["Tax",      Number(inv.tax      || 0)]);
-
+ 
+      if (Number(inv.discount_amount) > 0) {
+        totals.push(["Discount Amount", Number(inv.discount_amount)]);
+      }
+ 
+      if (Number(inv.tax_amount) > 0) {
+        totals.push(["GST Amount", Number(inv.tax_amount)]);
+      }
+ 
       totals.forEach(([label, amount]) => {
         doc.font("Helvetica").fontSize(9.5).fillColor(C.mid)
            .text(label,       TOT_X,             Y, { width: TOT_W - 90 })
            .text(fmt(amount), TOT_X + TOT_W - 90, Y, { width: 84, align: "right" });
         Y += ROW_H;
       });
-
+ 
       Y += 4;
       const GT_H = 28;
       roundedRect(doc, TOT_X - 10, Y, TOT_W + 10, GT_H, 5, C.primary, null);
@@ -407,7 +415,7 @@ if (contact) {
          .text("TOTAL",              TOT_X,             Y + 8, { width: TOT_W - 90 })
          .text(fmt(inv.total_amount), TOT_X + TOT_W - 90, Y + 8, { width: 84, align: "right" });
       Y += GT_H + 14;
-
+ 
       /* ══════════════════════════════════════════════════════════
          NOTES
       ══════════════════════════════════════════════════════════ */
@@ -420,7 +428,7 @@ if (contact) {
            .text(inv.notes, M_LEFT + 10, Y + 22, { width: USABLE_W * 0.55 - 20 });
         Y += 60;
       }
-
+ 
       /* ══════════════════════════════════════════════════════════
          POST-PROCESS — stamp FOOTER on every buffered page
          (Headers were already drawn live during content generation)
@@ -430,21 +438,21 @@ if (contact) {
         day: "2-digit", month: "short", year: "numeric",
         hour: "2-digit", minute: "2-digit",
       });
-
+ 
       for (let i = 0; i < totalPages; i++) {
         doc.switchToPage(i);
-
+ 
         const FY = PAGE_H - FOOTER_H;
-
+ 
         filledRect(doc, 0, FY, PAGE_W, FOOTER_H, C.primary);
         filledRect(doc, 0, FY, PAGE_W, 2, C.accent);
-
+ 
         // Left — clinic + contact
         const footerLeft = [inv.company_name, inv.admin_email, inv.admin_mobile]
           .filter(Boolean).join("  ·  ");
         doc.font("Helvetica").fontSize(8).fillColor("rgba(255,255,255,1)")
            .text(footerLeft, M_LEFT, FY + 10, { width: 300, lineBreak: false, ellipsis: true });
-
+ 
         // Center — thank you
       doc.font("Helvetica-Bold")
    .fontSize(8.5)
@@ -453,7 +461,7 @@ if (contact) {
      align: "center",
      width: PAGE_W,
    });
-
+ 
         // Right — page number
         if (totalPages > 1) {
           doc.font("Helvetica").fontSize(7.5).fillColor("rgba(255,255,255,0.65)")
@@ -461,19 +469,19 @@ if (contact) {
                width: USABLE_W, align: "right",
              });
         }
-
+ 
         // Status dot + label
         // doc.circle(M_LEFT + 4, FY + 34, 4).fill(statusColor(inv.bill_status));
         // doc.font("Helvetica-Bold").fontSize(8).fillColor("rgba(255,255,255,0.85)")
         //    .text(`Status: ${inv.bill_status || "Pending"}`, M_LEFT + 14, FY + 29);
-
+ 
         // Generated timestamp
         doc.font("Helvetica").fontSize(7.5).fillColor("rgba(255,255,255,0.55)")
            .text(`Generated: ${ts}`, M_LEFT, FY + 29, { width: USABLE_W, align: "right" });
       }
-
+ 
       doc.end();
-
+ 
     } catch (error) {
       console.error("PDF generation error:", error.message);
       if (!res.headersSent)
@@ -481,5 +489,5 @@ if (contact) {
     }
   }
 );
-
+ 
 module.exports = router;

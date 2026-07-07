@@ -16,7 +16,7 @@ router.get(
   async (req, res) => {
     try {
       const user = req.user;
-
+ 
       let query = `
         SELECT DISTINCT
           c.id,
@@ -28,61 +28,71 @@ router.get(
           c.blood_group,
           c.status,
           c.created_at,
-
+ 
           a.id AS appointment_id,
           a.appointment_date,
           a.from_time,
           a.to_time,
           a.selected_branch,
           a.status AS appointment_status
-
+ 
         FROM appointments a
-        INNER JOIN clients c 
+ 
+        INNER JOIN clients c
           ON c.id = a.client_id
-
+ 
         LEFT JOIN prescriptions p
           ON p.appointment_id = a.id
-
-        WHERE a.status = 'assigned'
-          AND p.id IS NULL                -- 🔥 prescription NOT created
+ 
+        WHERE
+          p.id IS NULL
+      `;
+ 
+      const params = [];
+ 
+      // Admin
+      if (user.role === "admin") {
+        query += `
           AND a.admin_id = ?
           AND c.admin_id = ?
-      `;
-
-      const params = [];
-
-      /* ================= ROLE CONDITIONS ================= */
-
-      // ADMIN
-      if (user.role === "admin") {
+        `;
+ 
         params.push(user.id, user.id);
       }
-
-      // DOCTOR
+ 
+      // Doctor (ONLY assigned appointments)
       if (user.role === "doctor") {
-        query += ` AND a.staff_id = ?`;
+        query += `
+          AND a.admin_id = ?
+          AND c.admin_id = ?
+          AND a.staff_id = ?
+        `;
+ 
         params.push(user.adminId, user.adminId, user.id);
       }
-
-      // RECEPTIONIST
+ 
+      // Receptionist
       if (user.role === "receptionist") {
+        query += `
+          AND a.admin_id = ?
+          AND c.admin_id = ?
+        `;
+ 
         params.push(user.adminId, user.adminId);
-        // Optional branch restriction
-        // query += ` AND a.selected_branch = ?`;
-        // params.push(user.branch);
       }
-
+ 
       query += `
-        ORDER BY a.appointment_date ASC, a.from_time ASC
+        ORDER BY a.appointment_date ASC,
+                 a.from_time ASC
       `;
-
+ 
       const [patients] = await db.execute(query, params);
-
+ 
       res.json({
         success: true,
         data: patients,
       });
-
+ 
     } catch (err) {
       console.error("Pending appointment clients error:", err);
       res.status(500).json({
@@ -100,7 +110,7 @@ router.get(
   async (req, res) => {
     try {
       const user = req.user;
-
+      
       let query = `
         SELECT DISTINCT
           c.id AS client_id,
@@ -507,8 +517,8 @@ router.post(
 
       // 🕒 Convert datetime
       const appointment_date = start.split("T")[0];
-      const from_time = start.split("T")[1]?.slice(0,5);
-      const to_time = end.split("T")[1]?.slice(0,5);
+      const from_time = start.split("T")[1]?.slice(0, 5);
+      const to_time = end.split("T")[1]?.slice(0, 5);
 
       // 👤 Validate client
       const [clients] = await db.query(
@@ -635,131 +645,257 @@ router.post(
 
 // ===================== default total list or any date  LIST APPOINTMENTS =====================
 router.get(
+
   "/appointments",
+
   authMiddleware,
+
   allowRoles("admin", "client", "doctor", "receptionist"),
+
   async (req, res) => {
+
     try {
+
       const { role, id: userId } = req.user;
+
       const adminId = role === "admin" ? req.user.id : req.user.adminId;
 
+
+
       let { date, branch } = req.query;
+
       branch = branch ? branch.trim().toLowerCase() : null;
 
-      // ==========================
-      // BASE WHERE CONDITIONS
-      // ==========================
+
+
+      // ========================== 
+
+      // BASE WHERE CONDITIONS 
+
+      // ========================== 
+
       let baseWhere = `a.admin_id = ?`;
+
       let baseParams = [adminId];
 
+
+
       if (role === "client") {
+
         baseWhere += " AND a.client_id = ?";
+
         baseParams.push(userId);
+
       }
+
+
 
       if (role === "doctor") {
+
         baseWhere += " AND a.staff_id = ?";
+
         baseParams.push(userId);
+
       }
+
+
 
       if (role === "receptionist") {
+
         const [[receptionist]] = await db.query(
-          `SELECT branch
-           FROM staff
+
+          `SELECT branch 
+
+           FROM staff 
+
            WHERE id = ? AND admin_id = ? AND role = 'receptionist' AND status = 1`,
+
           [userId, adminId]
+
         );
+
+
 
         if (!receptionist || !receptionist.branch) {
+
           return res.status(403).json({
+
             success: false,
+
             message: "Invalid receptionist branch",
+
           });
+
         }
 
+
+
         const recBranch = receptionist.branch.trim().toLowerCase();
+
         baseWhere += " AND LOWER(s.branch) = ?";
+
         baseParams.push(recBranch);
+
         branch = recBranch;
+
       }
+
+
 
       if (role === "admin" && branch) {
+
         baseWhere += " AND LOWER(s.branch) = ?";
+
         baseParams.push(branch);
+
       }
 
-      // ==========================
-      // DATE FILTER (ONLY IF PROVIDED)
-      // ==========================
+
+
+      // ========================== 
+
+      // DATE FILTER (ONLY IF PROVIDED) 
+
+      // ========================== 
+
       let listWhere = baseWhere;
+
       let listParams = [...baseParams];
 
+
+
       if (date) {
+
         listWhere += " AND DATE(a.appointment_date) = ?";
+
         listParams.push(date);
+
       }
 
-      // ==========================
-      // FETCH APPOINTMENTS
-      // ==========================
+
+
+      // ========================== 
+
+      // FETCH APPOINTMENTS 
+
+      // ========================== 
+
       const [appointments] = await db.query(
-        `SELECT
-          a.id,
-          a.purpose, -- ✅ NEW
-          a.selected_branch, -- ✅ NEW
-          DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
-          TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
-          TIME_FORMAT(a.to_time, '%H:%i') AS to_time,
-          a.status,
-          a.created_at,
-          c.id AS client_id,
-          c.name AS client_name,
-          s.id AS doctor_id,
-          s.name AS doctor_name,
-          s.branch
-         FROM appointments a
-         JOIN clients c ON c.id = a.client_id
-         JOIN staff s ON s.id = a.staff_id
-         WHERE ${listWhere}
+
+        `SELECT 
+
+          a.id, 
+
+          a.purpose, -- ✅ NEW 
+
+          a.selected_branch, -- ✅ NEW 
+
+          DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date, 
+
+          TIME_FORMAT(a.from_time, '%H:%i') AS from_time, 
+
+          TIME_FORMAT(a.to_time, '%H:%i') AS to_time, 
+
+          a.status, 
+
+          a.created_at, 
+
+          c.id AS client_id, 
+
+          c.name AS client_name, 
+
+          s.id AS doctor_id, 
+
+          s.name AS doctor_name, 
+
+          s.branch 
+
+         FROM appointments a 
+
+         JOIN clients c ON c.id = a.client_id 
+
+         JOIN staff s ON s.id = a.staff_id 
+
+         WHERE ${listWhere} 
+
          ORDER BY appointment_date DESC, from_time ASC`,
+
         listParams
+
       );
 
-      // ==========================
-      // TOTAL APPOINTMENTS
-      // ==========================
+
+
+      // ========================== 
+
+      // TOTAL APPOINTMENTS 
+
+      // ========================== 
+
       let totalAppointments = appointments.length;
 
+
+
       if (role === "admin") {
+
         const today = new Date().toISOString().split("T")[0];
+
         const [[totalResult]] = await db.query(
-          `SELECT COUNT(*) AS totalAppointments
-           FROM appointments a
-           JOIN staff s ON s.id = a.staff_id
-           WHERE ${baseWhere}
+
+          `SELECT COUNT(*) AS totalAppointments 
+
+           FROM appointments a 
+
+           JOIN staff s ON s.id = a.staff_id 
+
+           WHERE ${baseWhere} 
+
              AND DATE(a.appointment_date) <= ?`,
+
           [...baseParams, today]
+
         );
+
         totalAppointments = totalResult.totalAppointments;
+
       }
 
+
+
       return res.status(200).json({
+
         success: true,
+
         role,
+
         branch: branch || "all",
+
         date: date || null,
+
         count: appointments.length,
+
         totalAppointments,
+
         appointments,
+
       });
+
     } catch (error) {
+
       console.error("Appointments list error:", error);
+
       return res.status(500).json({
+
         success: false,
+
         message: "Internal server error",
+
       });
+
     }
+
   }
+
 );
 
 router.get(
@@ -1517,238 +1653,483 @@ router.put(
 // );
 
 router.put(
+
   "/appointment/:id/status",
+
   authMiddleware,
+
   allowRoles("receptionist", "doctor"),
+
   async (req, res) => {
+
     try {
+
       const { id } = req.params;
+
       const { status } = req.body;
+
       const { role, id: userId, adminId } = req.user;
 
+
+
       const allowedStatuses = ["assigned", "cancelled", "completed"];
+
       if (!allowedStatuses.includes(status)) {
+
         return res.status(400).json({
+
           success: false,
+
           message: "Invalid status",
+
         });
+
       }
 
-      /* ===============================
-         📌 FETCH APPOINTMENT + CURRENT STATUS
+
+
+      /* =============================== 
+
+         📌 FETCH APPOINTMENT + CURRENT STATUS 
+
       =============================== */
+
       const [[appointment]] = await db.execute(
-        `SELECT a.id, a.client_id, a.staff_id, a.status,
-                a.appointment_date, a.from_time, a.to_time,
-                s.branch AS doctor_branch
-         FROM appointments a
-         JOIN staff s ON s.id = a.staff_id
+
+        `SELECT a.id, a.client_id, a.staff_id, a.status, 
+
+                a.appointment_date, a.from_time, a.to_time, 
+
+                s.branch AS doctor_branch 
+
+         FROM appointments a 
+
+         JOIN staff s ON s.id = a.staff_id 
+
          WHERE a.id = ? AND a.admin_id = ?`,
+
         [id, adminId]
+
       );
+
+
 
       if (!appointment) {
+
         return res.status(404).json({
+
           success: false,
+
           message: "Appointment not found",
+
         });
+
       }
 
-      /* ===============================
-         ❌ CANCEL ONLY IF CURRENT STATUS = ASSIGNED
+
+
+      /* =============================== 
+
+         ❌ CANCEL ONLY IF CURRENT STATUS = ASSIGNED 
+
       =============================== */
+
       if (status === "cancelled" && appointment.status !== "assigned") {
+
         return res.status(400).json({
+
           success: false,
+
           message: `Appointment cannot be cancelled because it is already "${appointment.status}"`,
+
         });
+
       }
 
-      /* ===============================
-         👨‍⚕️ DOCTOR → OWN APPOINTMENTS ONLY
+
+
+      /* =============================== 
+
+         👨‍⚕️ DOCTOR → OWN APPOINTMENTS ONLY 
+
       =============================== */
+
       if (role === "doctor" && appointment.staff_id !== userId) {
+
         return res.status(403).json({
+
           success: false,
+
           message: "You can update only your own appointments",
+
         });
+
       }
 
-      /* ===============================
-         🧑‍💼 RECEPTIONIST → SAME BRANCH ONLY
+
+
+      /* =============================== 
+
+         🧑‍💼 RECEPTIONIST → SAME BRANCH ONLY 
+
       =============================== */
+
       if (role === "receptionist") {
+
         const [[receptionist]] = await db.execute(
-          `SELECT branch
-           FROM staff
-           WHERE id = ?
-             AND admin_id = ?
-             AND role = 'receptionist'
+
+          `SELECT branch 
+
+           FROM staff 
+
+           WHERE id = ? 
+
+             AND admin_id = ? 
+
+             AND role = 'receptionist' 
+
              AND status = 1`,
+
           [userId, adminId]
+
         );
+
+
 
         if (!receptionist) {
+
           return res.status(403).json({
+
             success: false,
+
             message: "Invalid receptionist",
+
           });
+
         }
+
+
 
         const receptionistBranch = receptionist.branch?.trim().toLowerCase();
+
         const doctorBranch = appointment.doctor_branch?.trim().toLowerCase();
 
+
+
         if (!receptionistBranch || receptionistBranch !== doctorBranch) {
+
           return res.status(403).json({
+
             success: false,
+
             message:
+
               "You can update appointments only for your branch doctors",
+
           });
+
         }
+
       }
 
-      /* ===============================
-         🔄 UPDATE STATUS
+
+
+      /* =============================== 
+
+         🔄 UPDATE STATUS 
+
       =============================== */
+
       await db.execute(
+
         `UPDATE appointments SET status = ? WHERE id = ?`,
+
         [status, id]
+
       );
 
-      /* ===============================
-         🔓 FREE SLOT + UPDATE is_booked IF CANCELLED
+
+
+      /* =============================== 
+
+         🔓 FREE SLOT + UPDATE is_booked IF CANCELLED 
+
       =============================== */
+
       if (status === "cancelled") {
-        // ✅ FREE TIME SLOT
+
+        // ✅ FREE TIME SLOT 
+
         await db.execute(
-          `UPDATE staff_time_slots
-           SET is_booked = 0
-           WHERE staff_id = ?
-             AND slot_date = ?
-             AND slot_time_from = ?
+
+          `UPDATE staff_time_slots 
+
+           SET is_booked = 0 
+
+           WHERE staff_id = ? 
+
+             AND slot_date = ? 
+
+             AND slot_time_from = ? 
+
              AND slot_time_to = ?`,
+
           [
+
             appointment.staff_id,
+
             appointment.appointment_date,
+
             appointment.from_time,
+
             appointment.to_time,
+
           ]
+
         );
 
-        // ✅ ALSO UPDATE appointments.is_booked
+
+
+        // ✅ ALSO UPDATE appointments.is_booked 
+
         await db.execute(
-          `UPDATE appointments
-           SET is_booked = 0
+
+          `UPDATE appointments 
+
+           SET is_booked = 0 
+
            WHERE id = ?`,
+
           [id]
+
         );
+
       }
 
-      /* ===============================
-         📞 FETCH RECEPTIONIST PHONE
+
+
+      /* =============================== 
+
+         📞 FETCH RECEPTIONIST PHONE 
+
       =============================== */
+
       const [receptionistsForContact] = await db.execute(
-        `SELECT mobile
-         FROM staff
-         WHERE role = 'receptionist'
-           AND branch = ?
-           AND admin_id = ?
-           AND status = 1
+
+        `SELECT mobile 
+
+         FROM staff 
+
+         WHERE role = 'receptionist' 
+
+           AND branch = ? 
+
+           AND admin_id = ? 
+
+           AND status = 1 
+
          LIMIT 1`,
+
         [appointment.doctor_branch, adminId]
+
       );
+
+
 
       const receptionistPhone =
+
         receptionistsForContact.length > 0
+
           ? receptionistsForContact[0].mobile
+
           : "";
 
-      /* ===============================
-         🔔 NOTIFICATION (DB)
+
+
+      /* =============================== 
+
+         🔔 NOTIFICATION (DB) 
+
       =============================== */
+
       const title = "Appointment Status Updated";
+
       const message = `Your appointment status has been updated to "${status}".`;
 
+
+
       const [notif] = await db.execute(
-        `INSERT INTO notifications
-         (admin_id, sender_role, sender_id, title, message, type)
+
+        `INSERT INTO notifications 
+
+         (admin_id, sender_role, sender_id, title, message, type) 
+
          VALUES (?, ?, ?, ?, ?, 'appointment')`,
+
         [adminId, role, userId, title, message]
+
       );
+
+
 
       const notificationId = notif.insertId;
 
+
+
       await db.execute(
-        `INSERT INTO notification_receivers
-         (notification_id, receiver_role, receiver_id)
+
+        `INSERT INTO notification_receivers 
+
+         (notification_id, receiver_role, receiver_id) 
+
          VALUES (?, 'client', ?)`,
+
         [notificationId, appointment.client_id]
+
       );
 
-      /* ===============================
-         📡 SOCKET NOTIFICATION
+
+
+      /* =============================== 
+
+         📡 SOCKET NOTIFICATION 
+
       =============================== */
+
       global.io
+
         .to(appointment.client_id.toString())
+
         .emit("new-notification", {
+
           id: notificationId,
+
           title,
+
           message,
+
           appointment_id: id,
+
           type: "appointment",
+
         });
 
-      /* ===============================
-         ✉️ EMAIL TO CLIENT
+
+
+      /* =============================== 
+
+         ✉️ EMAIL TO CLIENT 
+
       =============================== */
+
       const [[client]] = await db.execute(
-        `SELECT c.name AS client_name, c.email,
-                s.name AS doctor_name, s.branch AS doctor_branch,
-                a.appointment_date, a.from_time, a.to_time
-         FROM appointments a
-         JOIN clients c ON c.id = a.client_id
-         JOIN staff s ON s.id = a.staff_id
+
+        `SELECT c.name AS client_name, c.email, 
+
+                s.name AS doctor_name, s.branch AS doctor_branch, 
+
+                a.appointment_date, a.from_time, a.to_time 
+
+         FROM appointments a 
+
+         JOIN clients c ON c.id = a.client_id 
+
+         JOIN staff s ON s.id = a.staff_id 
+
          WHERE a.id = ?`,
+
         [id]
+
       );
+
+
 
       const statusColor =
+
         status === "assigned"
+
           ? "#2563eb"
+
           : status === "completed"
-          ? "#16a34a"
-          : status === "cancelled"
-          ? "#dc2626"
-          : "#6b7280";
+
+            ? "#16a34a"
+
+            : status === "cancelled"
+
+              ? "#dc2626"
+
+              : "#6b7280";
+
+
 
       if (client?.email) {
-        await sendAppointmentStatusEmail(client.email, {
-          clientName: client.client_name,
-          doctorName: client.doctor_name,
-          branchName: client.doctor_branch,
-          date: client.appointment_date,
-          fromTime: client.from_time,
-          toTime: client.to_time,
-          receptionistPhone,
-          status,
-          statusColor,
-        });
+
+        try {
+
+          await sendAppointmentStatusEmail(client.email, {
+
+            clientName: client.client_name,
+
+            doctorName: client.doctor_name,
+
+            branchName: client.doctor_branch,
+
+            date: client.appointment_date,
+
+            fromTime: client.from_time,
+
+            toTime: client.to_time,
+
+            receptionistPhone,
+
+            status,
+
+            statusColor,
+
+          });
+
+        } catch (mailError) {
+
+          console.error("Failed to send appointment status email:", mailError);
+
+          // Don't throw; allow the API to return success 
+
+        }
+
+
+
       }
 
+
+
       return res.status(200).json({
+
         success: true,
+
         message: "Appointment status updated successfully",
+
         appointmentId: id,
+
         status,
+
       });
+
     } catch (error) {
+
       console.error("Update appointment status error:", error);
+
       return res.status(500).json({
+
         success: false,
+
         message: "Server error",
+
       });
+
     }
+
   }
+
 );
 
 router.put(
@@ -2512,60 +2893,115 @@ router.get(
    unbilled appointment in the receptionist's branch.
 ───────────────────────────────────────────────────── */
 router.get(
+
   "/billing-patients",
+
   authMiddleware,
+
   allowRoles("receptionist", "admin"),
+
   async (req, res) => {
+
     try {
+
       const { role, id: userId } = req.user;
+
       const adminId = role === "admin" ? req.user.id : req.user.adminId;
 
+
+
       let branchFilter = "";
-      const params     = [adminId];
+
+      const params = [adminId];
+
+
 
       if (role === "receptionist") {
+
         const [[staffRow]] = await db.execute(
+
           `SELECT branch FROM staff WHERE id = ? AND admin_id = ?`,
+
           [userId, adminId]
+
         );
 
+
+
         if (!staffRow?.branch) {
+
           return res.status(400).json({
+
             success: false,
+
             message: "No branch assigned to your account",
+
           });
+
         }
 
+
+
         branchFilter = "AND LOWER(a.selected_branch) = LOWER(?)";
+
         params.push(staffRow.branch);
+
       }
 
+
+
       const [rows] = await db.execute(
-        `SELECT DISTINCT
-           c.id     AS id,
-           c.name   AS name,
-           c.email  AS email,
-           c.mobile AS mobile
-         FROM appointments a
-         JOIN clients c ON c.id = a.client_id
-         WHERE a.admin_id = ?
-           AND a.status   = 'completed'
-           ${branchFilter}
-           AND NOT EXISTS (
-             SELECT 1 FROM bills b
-             WHERE b.appointment_id = a.id
-               AND b.admin_id       = a.admin_id
-           )
+
+        `SELECT DISTINCT 
+
+           c.id     AS id, 
+
+           c.name   AS name, 
+
+           c.email  AS email, 
+
+           c.mobile AS mobile 
+
+         FROM appointments a 
+
+         JOIN clients c ON c.id = a.client_id 
+
+         WHERE a.admin_id = ? 
+
+           
+
+           ${branchFilter} 
+
+           AND NOT EXISTS ( 
+
+             SELECT 1 FROM bills b 
+
+             WHERE b.appointment_id = a.id 
+
+               AND b.admin_id       = a.admin_id 
+
+           ) 
+
          ORDER BY c.name ASC`,
+
         params
+
       );
 
+
+
       res.json({ success: true, data: rows });
+
     } catch (err) {
+
       console.error("Billing patients fetch error:", err);
+
       res.status(500).json({ success: false, message: "Server error" });
+
     }
+
   }
+
 );
 
 
@@ -2575,74 +3011,205 @@ router.get(
    patient scoped to the receptionist's branch.
 ───────────────────────────────────────────────────── */
 router.get(
+
   "/billing-appointments",
+
   authMiddleware,
+
   allowRoles("receptionist", "admin"),
+
   async (req, res) => {
+
     try {
+
       const { role, id: userId } = req.user;
-      const adminId   = role === "admin" ? req.user.id : req.user.adminId;
+
+      const adminId = role === "admin" ? req.user.id : req.user.adminId;
+
       const patientId = Number(req.query.patient_id);
 
+
+
       if (!patientId) {
+
         return res.status(400).json({
+
           success: false,
+
           message: "patient_id query param is required",
+
         });
+
       }
 
-      let branchFilter = "";
-      const params     = [adminId, patientId];
+
+
+      let receptionistBranch = null;
+
+
 
       if (role === "receptionist") {
+
         const [[staffRow]] = await db.execute(
-          `SELECT branch FROM staff WHERE id = ? AND admin_id = ?`,
+
+          `SELECT branch 
+
+           FROM staff 
+
+           WHERE id = ? 
+
+             AND admin_id = ? 
+
+             AND role = 'receptionist' 
+
+             AND status = 1`,
+
           [userId, adminId]
+
         );
 
+
+
         if (!staffRow?.branch) {
+
           return res.status(400).json({
+
             success: false,
+
             message: "No branch assigned to your account",
+
           });
+
         }
 
-        branchFilter = "AND LOWER(a.selected_branch) = LOWER(?)";
-        params.push(staffRow.branch);
+
+
+        receptionistBranch = staffRow.branch.trim().toLowerCase();
+
       }
 
-      const [rows] = await db.execute(
-        `SELECT
-           a.id,
-           a.appointment_date,
-           a.from_time,
-           a.to_time,
-           a.purpose,
-           a.selected_branch  AS branch,
-           a.status,
-           s.name             AS doctor_name,
-           s.qualification    AS doctor_qualification
-         FROM appointments a
-         LEFT JOIN staff s ON s.id = a.staff_id
-         WHERE a.admin_id  = ?
-           AND a.client_id = ?
-           AND a.status    = 'completed'
-           ${branchFilter}
-           AND NOT EXISTS (
-             SELECT 1 FROM bills b
-             WHERE b.appointment_id = a.id
-               AND b.admin_id       = a.admin_id
-           )
-         ORDER BY a.appointment_date DESC`,
-        params
-      );
 
-      res.json({ success: true, data: rows });
+
+      let sql = ` 
+
+        SELECT 
+
+            a.id, 
+
+            a.appointment_date, 
+
+            a.from_time, 
+
+            a.to_time, 
+
+            a.purpose, 
+
+            a.selected_branch AS branch, 
+
+            a.status, 
+
+            s.id AS doctor_id, 
+
+            s.name AS doctor_name, 
+
+            s.qualification AS doctor_qualification 
+
+        FROM appointments a 
+
+        LEFT JOIN staff s 
+
+               ON s.id = a.staff_id 
+
+        WHERE 
+
+            a.admin_id = ? 
+
+            AND a.client_id = ? 
+
+      `;
+
+
+
+      const params = [adminId, patientId];
+
+
+
+      // Receptionist: only appointments of their branch 
+
+      if (role === "receptionist") {
+
+        sql += ` 
+
+          AND LOWER(a.selected_branch) = ? 
+
+          AND LOWER(s.branch) = ? 
+
+        `;
+
+
+
+        params.push(receptionistBranch);
+
+        params.push(receptionistBranch);
+
+      }
+
+
+
+      // Only appointments that don't already have a bill 
+
+      sql += ` 
+
+        AND NOT EXISTS ( 
+
+          SELECT 1 
+
+          FROM bills b 
+
+          WHERE b.appointment_id = a.id 
+
+            AND b.admin_id = a.admin_id 
+
+        ) 
+
+        ORDER BY a.appointment_date DESC, a.from_time DESC 
+
+      `;
+
+
+
+      const [rows] = await db.execute(sql, params);
+
+
+
+      return res.json({
+
+        success: true,
+
+        count: rows.length,
+
+        data: rows,
+
+      });
+
+
+
     } catch (err) {
+
       console.error("Billing appointments fetch error:", err);
-      res.status(500).json({ success: false, message: "Server error" });
+
+      return res.status(500).json({
+
+        success: false,
+
+        message: "Server error",
+
+      });
+
     }
+
   }
+
 );
 
 module.exports = router;

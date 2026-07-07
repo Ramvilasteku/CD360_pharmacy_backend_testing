@@ -750,72 +750,157 @@ router.get(
 ═══════════════════════════════════════════════════════════════════ */
 
 async function byAppointmentHandler(req, res) {
-  try {
-    const { patient_id, appointment_id } = req.query;
 
-    if (!patient_id || !appointment_id)
+  try {
+
+    const { appointment_id } = req.query;
+
+
+
+    if (!appointment_id) {
+
       return res.status(400).json({
+
         success: false,
-        message: "patient_id and appointment_id are required",
+
+        message: "appointment_id is required",
+
       });
 
-    /* 1️⃣ Exact match: patient + appointment */
-    let [[rx]] = await db.execute(
-      `SELECT p.*, c.name AS patient_name, s.name AS doctor_name
-       FROM prescriptions p
-       LEFT JOIN clients c ON c.id = p.patient_id
-       LEFT JOIN staff   s ON s.id = p.doctor_id
-       WHERE p.patient_id = ? AND p.appointment_id = ?
-       ORDER BY p.created_at DESC LIMIT 1`,
-      [patient_id, appointment_id]
-    );
-
-    /* 2️⃣ Fallback: latest prescription for this patient */
-    if (!rx) {
-      [[rx]] = await db.execute(
-        `SELECT p.*, c.name AS patient_name, s.name AS doctor_name
-         FROM prescriptions p
-         LEFT JOIN clients c ON c.id = p.patient_id
-         LEFT JOIN staff   s ON s.id = p.doctor_id
-         WHERE p.patient_id = ?
-         ORDER BY p.created_at DESC LIMIT 1`,
-        [patient_id]
-      );
     }
 
-    if (!rx) return res.json({ success: true, data: null });
 
-    const medicines = safeParse(rx.medicines_json);
-    const tests = safeParse(rx.tests_json);
-    const consultations = safeParse(rx.consultation_type_json);
 
-    /* Enrich any legacy rows that don't yet have amount stored */
-    const enrichedMedicines = await Promise.all(
-      medicines.map(async (m) => {
-        if (m.amount != null) return m;
-        const [[med]] = await db.execute(
-          `SELECT amount FROM medicines WHERE id = ?`,
-          [m.medicine_id]
-        );
-        const unitAmount = Number(med?.amount ?? 0);
-        const qty = Number(m.quantity ?? 1);
-        return { ...m, amount: unitAmount, total_amount: unitAmount * qty };
-      })
+    // Find prescription for this appointment 
+
+    const [[rx]] = await db.execute(
+
+      `SELECT p.*, c.name AS patient_name, s.name AS doctor_name 
+
+       FROM prescriptions p 
+
+       LEFT JOIN clients c ON c.id = p.patient_id 
+
+       LEFT JOIN staff s ON s.id = p.doctor_id 
+
+       WHERE p.appointment_id = ? 
+
+       ORDER BY p.id DESC 
+
+       LIMIT 1`,
+
+      [appointment_id]
+
     );
 
+
+
+    if (!rx) {
+
+      return res.json({
+
+        success: true,
+
+        data: null,
+
+      });
+
+    }
+
+
+
+    const medicines = safeParse(rx.medicines_json);
+
+    const tests = safeParse(rx.tests_json);
+
+    const consultations = safeParse(rx.consultation_type_json);
+
+
+
+    const enrichedMedicines = await Promise.all(
+
+      medicines.map(async (m) => {
+
+        if (m.amount != null) return m;
+
+
+
+        const [[med]] = await db.execute(
+
+          `SELECT amount FROM medicines WHERE id = ?`,
+
+          [m.medicine_id]
+
+        );
+
+
+
+        const amount = Number(med?.amount ?? 0);
+
+        const qty = Number(m.quantity ?? 1);
+
+
+
+        return {
+
+          ...m,
+
+          amount,
+
+          total_amount: amount * qty,
+
+        };
+
+      })
+
+    );
+
+
+
     res.json({
+
       success: true,
+
       data: {
+
         id: rx.id,
+
+        patient_name: rx.patient_name,
+
+        doctor_name: rx.doctor_name,
+
         consultations,
+
         medicines: enrichedMedicines,
-        tests: tests.map(t => ({ ...t, cost: t.cost ?? 0 })),
+
+        tests: tests.map(t => ({
+
+          ...t,
+
+          cost: t.cost ?? 0,
+
+        })),
+
       },
+
     });
+
+
+
   } catch (err) {
-    console.error("by-appointment error:", err.message);
-    res.status(500).json({ success: false, message: err.message });
+
+    console.error("by-appointment error:", err);
+
+    res.status(500).json({
+
+      success: false,
+
+      message: err.message,
+
+    });
+
   }
+
 }
 
 /* Style A: query params  ?patient_id=X&appointment_id=Y */
@@ -1167,9 +1252,9 @@ router.get(
             // 👨‍⚕️ Doctor
             requester: rx.doctor_id
               ? {
-                  reference: `Practitioner/${rx.doctor_id}`,
-                  display: rx.doctor_name
-                }
+                reference: `Practitioner/${rx.doctor_id}`,
+                display: rx.doctor_name
+              }
               : undefined,
 
             authoredOn: rx.created_at,
@@ -1177,9 +1262,9 @@ router.get(
             // 🔗 Encounter
             encounter: rx.appointment_id
               ? {
-                  reference: `Encounter/${rx.appointment_id}`,
-                  display: `Visit on ${rx.appointment_date}`
-                }
+                reference: `Encounter/${rx.appointment_id}`,
+                display: `Visit on ${rx.appointment_date}`
+              }
               : undefined,
 
             // 🧠 Diagnosis
