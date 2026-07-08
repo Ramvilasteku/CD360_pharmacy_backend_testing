@@ -105,7 +105,8 @@ const sendMailForPrescription = async (prescriptionId) => {
 
         ap.id               AS appointment_id,
         ap.appointment_date AS appointment_date,
-        ap.selected_branch  AS branch
+        ap.selected_branch  AS branch, 
+        ap.purpose          AS chief_complaint 
      FROM prescriptions p
      LEFT JOIN clients      c  ON c.id  = p.patient_id
      LEFT JOIN staff        s  ON s.id  = p.doctor_id
@@ -140,6 +141,13 @@ const sendMailForPrescription = async (prescriptionId) => {
     ? path.join(__dirname, "..", "Images", rx.clinic_logo_filename)
     : null;
 
+  /* ── NOTES OBJECT (shared shape with frontend) ── */
+    const notesObj = {
+      chiefComplaint: rx.chief_complaint || "",
+      treatmentPlan:  rx.description     || "",
+      doctorNotes:    rx.notes           || "",
+    };
+
   /* ── BUILD PDF ── */
   const pdfBuffer = await buildPrescriptionPDF({
     clinic: {
@@ -163,8 +171,7 @@ const sendMailForPrescription = async (prescriptionId) => {
     medicines,
     tests,
     consultations,
-    notes: rx.notes || "",
-    description: rx.description || "",
+      notes: notesObj,   
   });
 
   /* ── SEND EMAIL ── */
@@ -185,6 +192,9 @@ const sendMailForPrescription = async (prescriptionId) => {
         month: "long",
         year: "numeric",
       }),
+    chiefComplaint: notesObj.chiefComplaint,   
+    treatmentPlan:  notesObj.treatmentPlan,    
+    doctorNotes:    notesObj.doctorNotes,      
     },
     pdfBuffer
   );
@@ -224,6 +234,12 @@ router.post("/", authMiddleware, async (req, res) => {
       description,
     } = req.body;
 
+    const {
+      chiefComplaint,
+      treatmentPlan,
+      doctorNotes,
+    } = notes;
+
     if (!patient_id)
       return res.status(400).json({ success: false, message: "patient_id is required" });
 
@@ -234,7 +250,14 @@ router.post("/", authMiddleware, async (req, res) => {
     const enrichedMedicines = await enrichMedicinesWithAmount(medicines, adminId);
 
     console.log("[CREATE] Enriched medicines:", JSON.stringify(enrichedMedicines, null, 2));
-
+      if (appointment_id) {
+        await db.execute(
+          `UPDATE appointments
+          SET purpose = ?
+          WHERE id = ?`,
+          [chiefComplaint || null, appointment_id]
+        );
+      }
     const [result] = await db.execute(
       `INSERT INTO prescriptions
          (admin_id, patient_id, doctor_id, appointment_id,
@@ -247,10 +270,11 @@ router.post("/", authMiddleware, async (req, res) => {
         resolvedDoctorId,
         appointment_id ?? null,
         JSON.stringify(consultation_types ?? []),
-        JSON.stringify(enrichedMedicines),          // ← enriched with amount
+        JSON.stringify(enrichedMedicines),
         JSON.stringify(tests ?? []),
-        notes ?? null,
-        description ?? null,
+
+        doctorNotes || null,      // prescriptions.notes
+        treatmentPlan || null,    // prescriptions.description
       ]
     );
 
@@ -750,157 +774,81 @@ router.get(
 ═══════════════════════════════════════════════════════════════════ */
 
 async function byAppointmentHandler(req, res) {
-
   try {
-
     const { appointment_id } = req.query;
 
-
-
     if (!appointment_id) {
-
       return res.status(400).json({
-
         success: false,
-
         message: "appointment_id is required",
-
       });
-
     }
 
-
-
-    // Find prescription for this appointment 
-
+    // Find prescription for this appointment
     const [[rx]] = await db.execute(
-
-      `SELECT p.*, c.name AS patient_name, s.name AS doctor_name 
-
-       FROM prescriptions p 
-
-       LEFT JOIN clients c ON c.id = p.patient_id 
-
-       LEFT JOIN staff s ON s.id = p.doctor_id 
-
-       WHERE p.appointment_id = ? 
-
-       ORDER BY p.id DESC 
-
+      `SELECT p.*, c.name AS patient_name, s.name AS doctor_name
+       FROM prescriptions p
+       LEFT JOIN clients c ON c.id = p.patient_id
+       LEFT JOIN staff s ON s.id = p.doctor_id
+       WHERE p.appointment_id = ?
+       ORDER BY p.id DESC
        LIMIT 1`,
-
       [appointment_id]
-
     );
-
-
 
     if (!rx) {
-
       return res.json({
-
         success: true,
-
         data: null,
-
       });
-
     }
 
-
-
     const medicines = safeParse(rx.medicines_json);
-
     const tests = safeParse(rx.tests_json);
-
     const consultations = safeParse(rx.consultation_type_json);
 
-
-
     const enrichedMedicines = await Promise.all(
-
       medicines.map(async (m) => {
-
         if (m.amount != null) return m;
 
-
-
         const [[med]] = await db.execute(
-
           `SELECT amount FROM medicines WHERE id = ?`,
-
           [m.medicine_id]
-
         );
 
-
-
         const amount = Number(med?.amount ?? 0);
-
         const qty = Number(m.quantity ?? 1);
 
-
-
         return {
-
           ...m,
-
           amount,
-
           total_amount: amount * qty,
-
         };
-
       })
-
     );
 
-
-
     res.json({
-
       success: true,
-
       data: {
-
         id: rx.id,
-
         patient_name: rx.patient_name,
-
         doctor_name: rx.doctor_name,
-
         consultations,
-
         medicines: enrichedMedicines,
-
         tests: tests.map(t => ({
-
           ...t,
-
           cost: t.cost ?? 0,
-
         })),
-
       },
-
     });
-
-
 
   } catch (err) {
-
     console.error("by-appointment error:", err);
-
     res.status(500).json({
-
       success: false,
-
       message: err.message,
-
     });
-
   }
-
 }
 
 /* Style A: query params  ?patient_id=X&appointment_id=Y */
@@ -1123,7 +1071,8 @@ router.get("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
           a.address      AS clinic_address,
           ap.appointment_date,
           ap.selected_branch AS branch,
-          ap.status          AS appointment_status
+          ap.status          AS appointment_status,
+          ap.purpose
        FROM prescriptions p
        LEFT JOIN clients      c  ON c.id  = p.patient_id
        LEFT JOIN staff        s  ON s.id  = p.doctor_id
@@ -1148,7 +1097,8 @@ router.get("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
           id: rx.appointment_id || null,
           appointment_date: rx.appointment_date || null,
           status: rx.appointment_status || null,
-        },
+          purpose: rx.purpose || "",
+      },
         branch: rx.branch || rx.doctor_branch || "—",
         patient: { id: rx.patient_id, name: rx.patient_name || "—" },
         doctor: rx.doctor_id
@@ -1252,9 +1202,9 @@ router.get(
             // 👨‍⚕️ Doctor
             requester: rx.doctor_id
               ? {
-                reference: `Practitioner/${rx.doctor_id}`,
-                display: rx.doctor_name
-              }
+                  reference: `Practitioner/${rx.doctor_id}`,
+                  display: rx.doctor_name
+                }
               : undefined,
 
             authoredOn: rx.created_at,
@@ -1262,9 +1212,9 @@ router.get(
             // 🔗 Encounter
             encounter: rx.appointment_id
               ? {
-                reference: `Encounter/${rx.appointment_id}`,
-                display: `Visit on ${rx.appointment_date}`
-              }
+                  reference: `Encounter/${rx.appointment_id}`,
+                  display: `Visit on ${rx.appointment_date}`
+                }
               : undefined,
 
             // 🧠 Diagnosis
@@ -1376,41 +1326,66 @@ router.put("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
     const { id } = req.params;
 
     const {
-      medicines = [],
-      tests = [],
-      notes,
-      description,
-      consultation_types,
-      appointment_id,
+  medicines = [],
+  tests = [],
+  consultation_types = [],
+  appointment_id,
+  notes = {},
     } = req.body;
+
+    const {
+      chiefComplaint,
+      treatmentPlan,
+      doctorNotes,
+    } = notes;
 
     /* ── Enrich medicines with amount from medicines table ── */
     const enrichedMedicines = await enrichMedicinesWithAmount(medicines, adminId);
 
     console.log("[UPDATE] Enriched medicines:", JSON.stringify(enrichedMedicines, null, 2));
 
-    const [result] = await db.execute(
-      `UPDATE prescriptions
-       SET appointment_id         = ?,
-           consultation_type_json = ?,
-           medicines_json         = ?,
-           tests_json             = ?,
-           notes                  = ?,
-           description            = ?,
-           updated_at             = NOW()
-       WHERE id = ? AND admin_id = ?`,
-      [
-        appointment_id ?? null,
-        JSON.stringify(consultation_types ?? []),
-        JSON.stringify(enrichedMedicines),           // ← enriched with amount
-        JSON.stringify(tests ?? []),
-        notes ?? null,
-        description ?? null,
-        id,
-        adminId,
-      ]
+    if (appointment_id) {
+    await db.execute(
+        `
+        UPDATE appointments
+        SET purpose = ?
+        WHERE id = ? AND admin_id = ?
+        `,
+        [
+            chiefComplaint || null,
+            appointment_id,
+            adminId
+        ]
     );
+    }
 
+
+   const [result] = await db.execute(
+`
+UPDATE prescriptions
+SET
+appointment_id=?,
+consultation_type_json=?,
+medicines_json=?,
+tests_json=?,
+notes=?,
+description=?,
+updated_at=NOW()
+WHERE id=? AND admin_id=?
+`,
+[
+appointment_id ?? null,
+JSON.stringify(consultation_types),
+JSON.stringify(enrichedMedicines),
+JSON.stringify(tests),
+
+doctorNotes || null,
+treatmentPlan || null,
+
+id,
+adminId
+]
+);
     if (!result.affectedRows)
       return res.status(404).json({ success: false, message: "Prescription not found" });
 

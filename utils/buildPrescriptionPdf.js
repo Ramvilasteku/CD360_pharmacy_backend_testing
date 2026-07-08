@@ -158,18 +158,18 @@ async function drawHeader(doc, clinic, branch, logoBuffer) {
   const nameW = COL_AW - (nameX - ML) - 10;
 
   doc.save()
-     .fontSize(10)
-     .font("Helvetica-Bold")
-     .fillColor(TEXT_DARK)
-     .text(clinic.name || "", nameX, 18, { width: nameW, lineBreak: false,align:"center", })
-     .restore();
+    .fontSize(10)
+    .font("Helvetica-Bold")
+    .fillColor(TEXT_DARK)
+    .text(clinic.name || "", 0, 18, { width: PAGE_W, align: "center" })
+    .restore();
 
   doc.save()
-     .fontSize(8)
-     .font("Helvetica")
-     .fillColor(TEXT_MUTED)
-     .text("Branch: " + (branch || "—"), nameX, 40, { width: nameW, lineBreak: true, align:"center", })
-     .restore();
+    .fontSize(8)
+    .font("Helvetica")
+    .fillColor(TEXT_MUTED)
+    .text("Branch: " + (branch || "—"), 0, 40, { width: PAGE_W, align: "center" })
+    .restore();
 
   /* ── COL B: Issued date ── */
   const bX = ML + COL_AW + 14;
@@ -224,6 +224,10 @@ async function drawHeader(doc, clinic, branch, logoBuffer) {
   return HDR_H + 12;
 }
 
+
+
+
+
 /* ═══════════════════════════════════════════════
    INFO BAND — Patient | Doctor | Appointment
    3 equal columns with clear dividers
@@ -273,6 +277,56 @@ function drawInfoBand(doc, patient, doctor, appointment, startY) {
          .text(item.line2, colX + padX, startY + 39, { width: COL_W - padX * 2, lineBreak: false })
          .restore();
     }
+  });
+
+  return startY + BAND_H + 16;
+}
+
+/* ═══════════════════════════════════════════════
+   CLINICAL BAND — Chief Complaint | Treatment Plan
+   2 equal columns, directly under patient/doctor band
+═══════════════════════════════════════════════ */
+function drawClinicalBand(doc, notes, startY) {
+  const hasChief = !!notes.chiefComplaint;
+  const hasPlan  = !!notes.treatmentPlan;
+  if (!hasChief && !hasPlan) return startY;   // nothing to draw, skip entirely
+
+  const COL_W = Math.floor(CW / 2);
+
+  const chiefH = hasChief
+    ? doc.heightOfString(notes.chiefComplaint, { width: COL_W - 20, fontSize: 9 })
+    : 0;
+  const planH = hasPlan
+    ? doc.heightOfString(notes.treatmentPlan, { width: COL_W - 20, fontSize: 9 })
+    : 0;
+  const BAND_H = Math.max(chiefH, planH) + 34;
+
+  doc.save().rect(ML, startY, CW, BAND_H).fill(TEAL_LIGHT).restore();
+  hLine(doc, startY,          TEAL, 0.8);
+  hLine(doc, startY + BAND_H, TEAL, 0.8);
+
+  const items = [
+    { label: "CHIEF COMPLAINT",  value: notes.chiefComplaint || "—" },
+    { label: "TREATMENT PLAN",   value: notes.treatmentPlan  || "—" },
+  ];
+
+  items.forEach((item, i) => {
+    const colX = ML + i * COL_W;
+    const padX = 10;
+
+    if (i > 0) {
+      doc.save().strokeColor(BORDER).lineWidth(0.5)
+         .moveTo(colX, startY + 8).lineTo(colX, startY + BAND_H - 8).stroke().restore();
+    }
+
+    doc.save()
+       .fontSize(6.5).font("Helvetica-Bold").fillColor(TEAL)
+       .text(item.label, colX + padX, startY + 9, { characterSpacing: 1, width: COL_W - padX * 2 })
+       .restore();
+    doc.save()
+       .fontSize(9).font("Helvetica").fillColor(TEXT_DARK)
+       .text(item.value, colX + padX, startY + 22, { width: COL_W - padX * 2 })
+       .restore();
   });
 
   return startY + BAND_H + 16;
@@ -387,8 +441,7 @@ module.exports = async function buildPrescriptionPDF(data) {
     medicines     = [],
     tests         = [],
     consultations = [],
-    notes         = "",
-    description   = "",
+     notes         = { chiefComplaint: "", treatmentPlan: "", doctorNotes: "" },
   } = data;
 
   const doc = new PDFDocument({ size: "A4", margin: 0, autoFirstPage: true });
@@ -416,6 +469,8 @@ if (clinic.logo) {
 
   /* ── INFO BAND ── */
   y = drawInfoBand(doc, patient, doctor, appointment, y);
+
+   y = drawClinicalBand(doc, notes, y);
 
   /* ── CONSULTATION TYPES ── */
   if (Array.isArray(consultations) && consultations.length) {
@@ -485,24 +540,23 @@ if (clinic.logo) {
     );
   }
 
-  /* ── NOTES ── */
-  if (notes || description) {
-    y = sectionLabel(doc, "Notes", y);
-    const noteText = [notes, description].filter(Boolean).join("\n");
-    const noteH = Math.max(
-      doc.heightOfString(noteText, { width: CW - 20, fontSize: 9 }) + 18,
+ 
+  /* ── DOCTOR NOTES (bottom, matches screen preview) ── */
+  if (notes.doctorNotes) {
+    y = sectionLabel(doc, "Doctor Notes", y);
+    const fieldH = Math.max(
+      doc.heightOfString(notes.doctorNotes, { width: CW - 20, fontSize: 9 }) + 18,
       32
     );
-    doc.save().rect(ML, y, CW, noteH).fill(TEAL_LIGHT).restore();
-    hLine(doc, y,          BORDER);
-    hLine(doc, y + noteH,  BORDER);
+    doc.save().rect(ML, y, CW, fieldH).fill(TEAL_LIGHT).restore();
+    hLine(doc, y,           BORDER);
+    hLine(doc, y + fieldH,  BORDER);
     doc.save()
        .fontSize(9).font("Helvetica").fillColor(TEXT_DARK)
-       .text(noteText, ML + 10, y + 9, { width: CW - 20 })
+       .text(notes.doctorNotes, ML + 10, y + 9, { width: CW - 20 })
        .restore();
-    y += noteH + 10;
+    y += fieldH + 10;
   }
-
   /* ── FOOTER ── */
   drawFooter(doc, clinic, doctor, logoBuffer);
 

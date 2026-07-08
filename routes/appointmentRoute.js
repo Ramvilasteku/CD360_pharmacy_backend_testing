@@ -34,7 +34,8 @@ router.get(
           a.from_time,
           a.to_time,
           a.selected_branch,
-          a.status AS appointment_status
+          a.status AS appointment_status,
+          a.purpose
  
         FROM appointments a
  

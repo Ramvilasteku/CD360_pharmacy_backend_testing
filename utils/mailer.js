@@ -266,17 +266,17 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
     clinicEmail,
     date,
   } = data;
-
+ 
   /* ── Guard: reject broken PDF ── */
   if (!pdfBuffer || pdfBuffer.length < 500) {
     throw new Error(
       `PDF buffer invalid for ${patientName} — size: ${pdfBuffer?.length ?? 0} bytes`
     );
   }
-
+ 
   /* ── Check logo file exists on disk ── */
   const logoExists = clinicLogoPath && fs.existsSync(clinicLogoPath);
-
+ 
   /* ── Build attachments array ── */
   const attachments = [
     {
@@ -285,7 +285,7 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
       contentType: "application/pdf",
     },
   ];
-
+ 
   /* ── Attach logo as CID inline image (only if file exists) ── */
   if (logoExists) {
     const ext      = path.extname(clinicLogoPath).toLowerCase().replace(".", ""); // png / jpg
@@ -297,7 +297,7 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
       contentType: mimeType,
     });
   }
-
+ 
   await sendWithRetry({
     from:        `"${clinicName}" <${process.env.EMAIL_USER}>`,
     to,
@@ -313,23 +313,23 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
 </head>
 <body style="margin:0; padding:0; background-color:#e8f0f2;
              font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
-
+ 
   <table width="100%" cellpadding="0" cellspacing="0" border="0"
     style="background:#e8f0f2; padding:32px 0;">
     <tr>
       <td align="center">
-
+ 
         <!-- MAIN CARD -->
         <table width="620" cellpadding="0" cellspacing="0" border="0"
           style="max-width:620px; width:100%; border-radius:14px; overflow:hidden;
                  box-shadow:0 8px 32px rgba(0,0,0,0.12);">
-
+ 
           <!-- ══ HEADER — 3 COLUMNS ══ -->
           <tr>
             <td style="background:#3f6f7a; padding:0;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
-
+ 
                   <!-- COL 1: Logo + Clinic Name -->
                   <td width="34%" valign="middle"
                     style="padding:24px 16px 24px 24px;
@@ -352,12 +352,12 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
                                       letter-spacing:0.3px; line-height:1.3;">
                             ${clinicName}
                           </div>
-                          
+                         
                         </td>
                       </tr>
                     </table>
                   </td>
-
+ 
                   <!-- COL 2: Date + Patient -->
                   <td width="33%" valign="middle" align="center"
                     style="padding:24px 14px;
@@ -380,7 +380,7 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
                       </div>
                     </div>
                   </td>
-
+ 
                   <!-- COL 3: Doctor -->
                   <td width="33%" valign="middle" align="center"
                     style="padding:24px 14px;">
@@ -391,14 +391,17 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
                     <div style="color:#ffffff; font-size:14px; font-weight:700; margin-top:5px;">
                       ${doctorName}
                     </div>
-                    
+                   
                   </td>
-
+ 
                 </tr>
               </table>
             </td>
           </tr>
-
+ 
+ 
+         
+ 
           <!-- ══ GREETING ══ -->
           <tr>
             <td style="background:#dff0f3; padding:13px 28px;
@@ -409,17 +412,17 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
               </p>
             </td>
           </tr>
-
+ 
           <!-- ══ BODY ══ -->
           <tr>
             <td style="background:#ffffff; padding:28px 28px;">
-
+ 
               <p style="margin:0 0 20px; font-size:14px; color:#37474f; line-height:1.75;">
                 Please find your prescription attached to this email as a
                 <strong>PDF document</strong>. It has been issued by your doctor
                 after your recent consultation.
               </p>
-
+ 
               <!-- Details card -->
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="border:1px solid #d8eaed; border-radius:10px;
@@ -480,7 +483,7 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
                   </td>
                 </tr>
               </table>
-
+ 
               <!-- Attachment note -->
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="background:#f0faf8; border:1px solid #b2ddd6;
@@ -505,7 +508,7 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
                   </td>
                 </tr>
               </table>
-
+ 
               <!-- CTA Button -->
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
@@ -519,16 +522,16 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
                   </td>
                 </tr>
               </table>
-
+ 
             </td>
           </tr>
-
+ 
           <!-- ══ FOOTER ══ -->
           <tr>
             <td style="background:#2d5560; padding:0;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
-
+ 
                   <!-- Left: Logo + Clinic Name -->
                   <td valign="middle" style="padding:18px 24px;">
                     <table cellpadding="0" cellspacing="0" border="0">
@@ -555,7 +558,7 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
                       </tr>
                     </table>
                   </td>
-
+ 
                   <!-- Right: Contact -->
                   <td valign="middle" align="right" style="padding:18px 24px;">
                     ${clinicPhone ? `
@@ -567,18 +570,18 @@ const sendPrescriptionEmail = async (to, data, pdfBuffer) => {
                       &#9993; ${clinicEmail}
                     </div>` : ""}
                   </td>
-
+ 
                 </tr>
               </table>
             </td>
           </tr>
-
+ 
         </table>
-
+ 
       </td>
     </tr>
   </table>
-
+ 
 </body>
 </html>`,
   });
