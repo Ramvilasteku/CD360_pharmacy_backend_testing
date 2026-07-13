@@ -48,6 +48,8 @@ const server = http.createServer(app);
 const path = require("path");
 const { fileURLToPath } = require("url");
 const { authMiddleware } = require("./middlewares/authMiddleware.js");
+const excelRoutes = require("./routes/excel");
+
 
 // ---------- MIDDLEWARE ----------
 app.use(
@@ -86,6 +88,7 @@ app.delete("/api/role-modules/:role",  authController.loginAuth,authController.d
 
 // ---------- PROTECTED ROUTES ----------
 
+app.use("/api/excel", excelRoutes);
 app.use("/api", stafftimeSlots);
 app.use("/service", serviceRequest);
 app.use("/appointment", appointment);

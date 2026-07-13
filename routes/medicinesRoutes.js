@@ -27,8 +27,6 @@ router.post(
   allowRoles("admin", "doctor"),
   async (req, res) => {
     try {
-      const adminId = getAdminIdFromUser(req.user);
-
       const {
         medicine_name,
         type,
@@ -41,21 +39,50 @@ router.post(
         description,
       } = req.body;
 
-      if (!medicine_name) {
+      if (!medicine_name || !medicine_name.trim()) {
         return res.status(400).json({
           success: false,
           message: "Medicine name is required",
         });
       }
 
+      // Check for duplicate medicine name
+      const [existing] = await db.execute(
+        `
+        SELECT id
+        FROM medicines
+        WHERE LOWER(TRIM(medicine_name)) = LOWER(TRIM(?))
+        LIMIT 1
+        `,
+        [medicine_name]
+      );
+
+      if (existing.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Medicine already exists",
+        });
+      }
+
       const [result] = await db.execute(
         `
         INSERT INTO medicines
-        (medicine_name, type, strength, unit, quantity, amount, when_to_take, duration, description, admin_id)
+        (
+          medicine_name,
+          type,
+          strength,
+          unit,
+          quantity,
+          amount,
+          when_to_take,
+          duration,
+          description,
+          admin_id
+        )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
-          medicine_name,
+          medicine_name.trim(),
           type || null,
           strength || null,
           unit || null,
@@ -64,19 +91,24 @@ router.post(
           when_to_take ? JSON.stringify(when_to_take) : null,
           duration || null,
           description || null,
-          adminId,
+          null,
         ]
       );
 
       res.status(201).json({
         success: true,
         message: "Medicine added successfully",
-        data: { id: result.insertId },
+        data: {
+          id: result.insertId,
+        },
       });
-
     } catch (error) {
       console.error(error);
-      res.status(500).json({ success: false, message: "Server error" });
+
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
     }
   }
 );
@@ -86,43 +118,112 @@ router.post(
    2️⃣ GET ALL MEDICINES
 ============================================================================ */
 router.get(
-  "/",
+  "/search-all",
   authMiddleware,
   allowRoles("admin", "doctor", "receptionist"),
   async (req, res) => {
     try {
-      const adminId = getAdminIdFromUser(req.user);
+      const search = req.query.search || "";
 
       const [rows] = await db.execute(
         `
         SELECT *
         FROM medicines
-        WHERE admin_id = ?
-        ORDER BY created_at DESC
+        WHERE medicine_name LIKE ?
+        ORDER BY medicine_name ASC
         `,
-        [adminId]
+        [`%${search}%`]
       );
 
-      const parsed = rows.map(row => ({
-      ...row,
-      when_to_take:
-        typeof row.when_to_take === "string"
-          ? JSON.parse(row.when_to_take)
-          : row.when_to_take || [],
-    }));
+      res.json({
+        success: true,
+        data: rows,
+      });
+
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
+    }
+  }
+);
+
+router.get(
+  "/search",
+  authMiddleware,
+  allowRoles("admin", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+
+      const search = req.query.search || "";
+      const limit = Math.min(Number(req.query.limit) || 20, 50);
+      const page = Number(req.query.page) || 1;
+
+      const offset = (page - 1) * limit;
 
 
-      // 🔥 Extract UNIQUE values for dropdowns
-      const unique = (key) =>
-        [...new Set(parsed.map(m => m[key]).filter(Boolean))];
+      const [rows] = await db.execute(`
+        SELECT *
+        FROM medicines
+        WHERE medicine_name LIKE ?
+        ORDER BY medicine_name ASC
+        LIMIT ${limit} OFFSET ${offset}
+      `, [
+        `%${search}%`
+      ]);
+
+
+      res.json({
+        success: true,
+        data: rows
+      });
+
+
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        success: false
+      });
+    }
+  }
+);
+
+router.get(
+  "/options",
+  authMiddleware,
+  allowRoles("admin", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const [rows] = await db.execute(`
+        SELECT
+          type,
+          strength,
+          unit,
+          duration,
+          when_to_take
+        FROM medicines
+      `);
+
+      const parsed = rows.map((row) => ({
+        ...row,
+        when_to_take:
+          typeof row.when_to_take === "string"
+            ? JSON.parse(row.when_to_take)
+            : row.when_to_take || [],
+      }));
+
+      const unique = (key) => [
+        ...new Set(parsed.map((m) => m[key]).filter(Boolean)),
+      ];
 
       const whenOptions = [
-        ...new Set(parsed.flatMap(m => m.when_to_take || []))
+        ...new Set(parsed.flatMap((m) => m.when_to_take || [])),
       ];
 
       res.json({
         success: true,
-        data: parsed,
         options: {
           types: unique("type"),
           strengths: unique("strength"),
@@ -131,14 +232,14 @@ router.get(
           when_to_take: whenOptions,
         },
       });
-
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ success: false });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+      });
     }
   }
 );
-
 
 /* ============================================================================
    3️⃣ UPDATE MEDICINE
