@@ -55,31 +55,30 @@ router.get(
       if (user.role === "admin") {
         query += `
           AND a.admin_id = ?
-          AND c.admin_id = ?
+          
         `;
  
-        params.push(user.id, user.id);
+        params.push( user.id);
       }
  
       // Doctor (ONLY assigned appointments)
       if (user.role === "doctor") {
-        query += `
-          AND a.admin_id = ?
-          AND c.admin_id = ?
-          AND a.staff_id = ?
-        `;
- 
-        params.push(user.adminId, user.adminId, user.id);
-      }
+         query += `
+            AND a.admin_id = ?
+            AND a.staff_id = ?
+          `;
+
+          params.push(user.adminId, user.id);
+        }
  
       // Receptionist
       if (user.role === "receptionist") {
         query += `
           AND a.admin_id = ?
-          AND c.admin_id = ?
-        `;
- 
-        params.push(user.adminId, user.adminId);
+           AND a.selected_branch = ?
+         `;
+
+        params.push(user.adminId, user.branch);
       }
  
       query += `
@@ -235,6 +234,8 @@ router.post(
       const { role, id: userId, adminId } = req.user;
 
       let clientId;
+      let appointmentAdminId;
+
       let {
         doctorId,
         appointment_date,
@@ -269,20 +270,20 @@ router.post(
 
       // 👤 Client validation
       const [clients] = await db.query(
-        `SELECT id, name, email FROM clients WHERE id=? AND admin_id=?`,
-        [clientId, adminId]
+        `SELECT id, name, email FROM clients WHERE id=? `,
+        [clientId]
       );
       if (!clients.length) {
         return res.status(404).json({ message: "Client not found" });
       }
       const client = clients[0];
 
-      // 👨‍⚕️ Doctor validation
+     
       // 👨‍⚕️ Doctor validation
       const [doctors] = await db.query(
-        `SELECT id, name, branch FROM staff
-        WHERE id=? AND role='doctor' AND admin_id=? AND status=1`,
-        [doctorId, adminId]
+        `SELECT id, name, branch,admin_id FROM staff
+        WHERE id=? AND role='doctor' AND status=1`,
+        [doctorId]
       );
 
       if (!doctors.length) {
@@ -290,14 +291,25 @@ router.post(
       }
       const doctor = doctors[0];
 
+
+      // ==========================================
+      // DETERMINE HOSPITAL/ADMIN FOR APPOINTMENT
+      // ==========================================
+      if (role === "client") {
+        appointmentAdminId = doctor.admin_id;
+      } else {
+        appointmentAdminId = adminId;
+      } 
+
+
       /* =================================================
    🆕 RECEPTIONIST → SAME BRANCH DOCTOR ONLY
 ================================================= */
       if (role === "receptionist") {
         const [[receptionist]] = await db.query(
           `SELECT branch FROM staff
-     WHERE id=? AND admin_id=? AND role='receptionist' AND status=1`,
-          [userId, adminId]
+     WHERE id=?  AND role='receptionist' AND status=1`,
+          [userId]
         );
 
         if (!receptionist) {
@@ -322,7 +334,7 @@ router.post(
         `SELECT id FROM staff_time_slots
          WHERE admin_id=? AND staff_id=? AND slot_date=?
          AND slot_time_from=? AND slot_time_to=? AND is_booked=0`,
-        [adminId, doctorId, appointment_date, from_time, to_time]
+        [appointmentAdminId, doctorId, appointment_date, from_time, to_time]
       );
       if (!slots.length) {
         return res.status(400).json({ message: "Slot not available" });
@@ -336,7 +348,7 @@ router.post(
      AND admin_id = ?
      AND status = 1
      AND LOWER(TRIM(branch)) = LOWER(TRIM(?))`,
-        [adminId, doctor.branch]
+        [appointmentAdminId, doctor.branch]
       );
 
       const receptionistPhone =
@@ -353,7 +365,7 @@ router.post(
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 `,
         [
-          adminId,
+          appointmentAdminId,
           clientId,
           doctorId,
           purpose, // ✅ NEW
@@ -377,22 +389,43 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       const message = `Appointment with  ${doctor.name} on ${appointment_date} (${from_time}-${to_time})`;
 
       // 🔹 Create notification
-      const [notif] = await db.query(
+     const [notif] = await db.query(
         `INSERT INTO notifications
-   (admin_id,sender_role, sender_id, title, message, type)
-   VALUES (?, ?, ?, ?, ?, 'appointment')`,
-        [adminId, role, role === "client" ? clientId : userId, title, message]
+        (
+          admin_id,
+          sender_role,
+          sender_id,
+          title,
+          message,
+          type
+        )
+        VALUES
+        (?, ?, ?, ?, ?, 'appointment')`,
+        [
+          appointmentAdminId,
+          role,
+          role === "client"
+            ? clientId
+            : userId,
+          title,
+          message,
+        ]
       );
 
       const notificationId = notif.insertId;
 
-      /* ===============================
-   👨‍⚕️ DOCTOR RECEIVER
-=============================== */
+       // ===============================
+      // DOCTOR RECEIVER
+      // ===============================
       await db.query(
         `INSERT INTO notification_receivers
-   (notification_id, receiver_role, receiver_id)
-   VALUES (?, 'doctor', ?)`,
+        (
+          notification_id,
+          receiver_role,
+          receiver_id
+        )
+        VALUES
+        (?, 'doctor', ?)`,
         [notificationId, doctor.id]
       );
 
@@ -409,7 +442,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       // 🔹 Get doctor branch
       const [[doctorBranch]] = await db.query(
         `SELECT branch FROM staff WHERE id = ? AND admin_id = ?`,
-        [doctorId, adminId]
+        [doctorId, appointmentAdminId]
       );
 
       if (doctorBranch?.branch) {
@@ -419,7 +452,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
        AND admin_id = ?
        AND branch = ?
        AND status = 1`,
-          [adminId, doctorBranch.branch]
+          [appointmentAdminId, doctorBranch.branch]
         );
 
         for (const rec of receptionists) {
@@ -457,7 +490,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       });
     } catch (error) {
       console.error("Appointment Error:", error);
-      res.status(500).json({ message: "Internal server error", error });
+      return  res.status(500).json({ success: false,message: "Internal server error", error:error.message });
     }
   }
 );
@@ -679,17 +712,20 @@ router.get(
 
       let baseParams = [adminId];
 
+      let query = `SELECT * FROM appointments a`;
 
+      // if (role === "client") {
+
+      //   baseWhere += " AND a.client_id = ?";
+
+      //   baseParams.push(userId);
+
+      // }
 
       if (role === "client") {
-
-        baseWhere += " AND a.client_id = ?";
-
-        baseParams.push(userId);
-
+        baseWhere = "a.client_id = ?";
+        baseParams = [userId];
       }
-
-
 
       if (role === "doctor") {
 
@@ -783,43 +819,36 @@ router.get(
 
       const [appointments] = await db.query(
 
-        `SELECT 
+        `SELECT
+      a.id,
+      a.purpose,
+      a.selected_branch,
+      DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date,
+      TIME_FORMAT(a.from_time, '%H:%i') AS from_time,
+      TIME_FORMAT(a.to_time, '%H:%i') AS to_time,
+      a.status,
+      a.created_at,
 
-          a.id, 
+      c.id AS client_id,
+      c.name AS client_name,
 
-          a.purpose, -- ✅ NEW 
+      s.id AS doctor_id,
+      s.name AS doctor_name,
+      s.branch,
 
-          a.selected_branch, -- ✅ NEW 
+      -- Company Details
+      ad.company_name,
+      ad.company_logo,
+      ad.name AS admin_name
 
-          DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS appointment_date, 
+      FROM appointments a
+      JOIN clients c ON c.id = a.client_id
+      JOIN staff s ON s.id = a.staff_id
+      LEFT JOIN admins ad ON ad.id = a.admin_id
 
-          TIME_FORMAT(a.from_time, '%H:%i') AS from_time, 
+      WHERE ${listWhere}
 
-          TIME_FORMAT(a.to_time, '%H:%i') AS to_time, 
-
-          a.status, 
-
-          a.created_at, 
-
-          c.id AS client_id, 
-
-          c.name AS client_name, 
-
-          s.id AS doctor_id, 
-
-          s.name AS doctor_name, 
-
-          s.branch 
-
-         FROM appointments a 
-
-         JOIN clients c ON c.id = a.client_id 
-
-         JOIN staff s ON s.id = a.staff_id 
-
-         WHERE ${listWhere} 
-
-         ORDER BY appointment_date DESC, from_time ASC`,
+      ORDER BY appointment_date DESC, from_time ASC`,
 
         listParams
 
@@ -1367,7 +1396,7 @@ router.put(
   async (req, res) => {
     try {
       const clientId = req.user.id;
-      const adminId = req.user.adminId;
+      // const adminId = req.user.adminId;
       const { appointmentId } = req.body;
 
       if (!appointmentId)
@@ -1420,7 +1449,7 @@ router.put(
         `INSERT INTO notifications 
          (admin_id, sender_role, sender_id, title, message, type) 
          VALUES (?, 'client', ?, ?, ?, 'appointment')`,
-        [adminId, clientId, title, message]
+        [ appointment.admin_id,clientId,title,message]
       );
 
       const notificationId = notifResult.insertId;
@@ -1439,7 +1468,11 @@ router.put(
           `INSERT INTO notification_receivers 
            (notification_id, receiver_role, receiver_id) 
            VALUES (?, ?, ?)`,
-          [notificationId, r.role, r.id] // 👈 role added
+          [
+             notificationId,
+            r.role,
+            r.id,
+          ] // 👈 role added
         );
 
         global.io.to(r.id.toString()).emit("new-notification", {
@@ -2597,16 +2630,21 @@ router.get(
       // ==========================
       // BASE WHERE CONDITIONS
       // ==========================
-      let where = `a.id = ? AND a.admin_id = ?`;
-      let params = [appointmentId, adminId];
+      let where;
+      let params;
 
       // ==========================
       // ROLE BASED ACCESS
       // ==========================
       if (role === "client") {
-        where += " AND a.client_id = ?";
-        params.push(userId);
-      }
+        where = `a.id = ? AND a.client_id = ?`;
+        params = [appointmentId, userId];
+      }else {
+        const adminId = role === "admin" ? userId : req.user.adminId;
+
+        where = `a.id = ? AND a.admin_id = ?`;
+        params = [appointmentId, adminId];
+    }
 
       if (role === "doctor") {
         where += " AND a.staff_id = ?";

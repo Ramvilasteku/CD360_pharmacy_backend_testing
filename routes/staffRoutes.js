@@ -641,7 +641,53 @@ router.get(
     }
   }
 );
+// new route for centralised user
+router.get(
+  "/staff/doctors/client/:adminId",
+  authMiddleware,
+  allowRoles("client"),
+  async (req, res) => {
+    try {
+      const { adminId } = req.params;
 
+      if (!adminId) {
+        return res.status(400).json({
+          success: false,
+          message: "Admin ID is required",
+        });
+      }
+
+      const [doctors] = await db.execute(
+        `SELECT
+            id,
+            name,
+            email,
+            mobile,
+            qualification,
+            branch,
+            profile_photo
+         FROM staff
+         WHERE admin_id = ?
+           AND role = 'doctor'
+           AND status = 1
+         ORDER BY name ASC`,
+        [adminId]
+      );
+
+      res.json({
+        success: true,
+        count: doctors.length,
+        data: doctors,
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
+    }
+  }
+);
 
 //count available doctor of branch 
 

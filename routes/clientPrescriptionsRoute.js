@@ -3,6 +3,8 @@ const router  = express.Router();
 const db      = require("../db");
 const { authMiddleware } = require("../middlewares/authMiddleware");
 const { allowRoles }     = require("../middlewares/roleMiddleware");
+const path = require("path");
+const buildPrescriptionPDF = require("../utils/buildPrescriptionPdf");
 
 /* ───────── Safe JSON Parser ───────── */
 const safeParse = (value) => {
@@ -32,35 +34,42 @@ router.get(
 
       const [rows] = await db.execute(
         `SELECT
-           p.id,
-           p.created_at,
+   p.id,
+   p.created_at,
 
-           JSON_LENGTH(p.consultation_type_json) AS consultation_count,
-           JSON_LENGTH(p.medicines_json)         AS medicine_count,
-           JSON_LENGTH(p.tests_json)             AS test_count,
+   JSON_LENGTH(p.consultation_type_json) AS consultation_count,
+   JSON_LENGTH(p.medicines_json)         AS medicine_count,
+   JSON_LENGTH(p.tests_json)             AS test_count,
 
-           COALESCE(s.name, '')          AS doctor_name,
-           COALESCE(s.qualification, '') AS doctor_qualification,
-           COALESCE(s.branch, '')        AS branch,
+   COALESCE(s.name, '')          AS doctor_name,
+   COALESCE(s.qualification, '') AS doctor_qualification,
+   COALESCE(s.branch, '')        AS branch,
 
-           -- ✅ APPOINTMENT DATA (FIX)
-           ap.id               AS appointment_id,
-           ap.appointment_date AS appointment_date
+  ap.id                AS appointment_id,
+ap.appointment_date  AS appointment_date,
+ap.selected_branch   AS branch,
+ap.purpose            AS appointment_purpose,
 
-         FROM prescriptions p
+   -- Company Details
+   a.company_name,
+   a.company_logo,
+   a.name AS admin_name
 
-         LEFT JOIN staff s
-           ON s.id = p.doctor_id
-          AND s.admin_id = p.admin_id
+    FROM prescriptions p
 
-         -- ✅ JOIN APPOINTMENTS
-         LEFT JOIN appointments ap
-           ON ap.id = p.appointment_id
+    LEFT JOIN staff s
+      ON s.id = p.doctor_id
+    AND s.admin_id = p.admin_id
 
-         WHERE p.patient_id = ?
-           AND p.admin_id   = ?
-         ORDER BY p.created_at DESC`,
-        [clientId, adminId]
+    LEFT JOIN appointments ap
+      ON ap.id = p.appointment_id
+
+    LEFT JOIN admins a
+      ON a.id = p.admin_id
+
+    WHERE p.patient_id = ?
+    ORDER BY p.created_at DESC`,
+        [clientId]
       );
 
       res.json({
@@ -260,8 +269,8 @@ router.get(
 
          WHERE p.id         = ?
            AND p.patient_id = ?
-           AND p.admin_id   = ?`,
-        [id, clientId, adminId]
+          `,
+        [id, clientId]
       );
 
       if (!rx) {
@@ -479,4 +488,274 @@ router.get(
   }
 );
 
+
+/* =====================================================
+   GET /api/client/prescriptions/:id/download
+   Download prescription as PDF
+===================================================== */
+router.get(
+  "/:id/download",
+  authMiddleware,
+  allowRoles("client"),
+  async (req, res) => {
+    try {
+
+      const clientId = req.user.id;
+      const { id } = req.params;
+
+
+      const [[rx]] = await db.execute(
+        `
+        SELECT
+          p.*,
+
+          s.id AS doctor_id,
+          s.name AS doctor_name,
+          s.qualification AS doctor_qualification,
+          s.branch AS doctor_branch,
+
+          a.company_name,
+          a.company_logo,
+          a.address AS clinic_address,
+          a.email AS clinic_email,
+          a.mobile AS clinic_phone,
+
+          ap.id AS appointment_id,
+          ap.appointment_date,
+          ap.selected_branch AS branch,
+
+          ap.purpose AS appointment_purpose
+
+        FROM prescriptions p
+
+
+        LEFT JOIN staff s
+          ON s.id = p.doctor_id
+         AND s.admin_id = p.admin_id
+
+
+        LEFT JOIN appointments ap
+  ON ap.id = p.appointment_id
+
+
+        INNER JOIN admins a
+          ON a.id = p.admin_id
+
+
+        WHERE p.id = ?
+        AND p.patient_id = ?
+
+        `,
+        [
+          id,
+          clientId
+        ]
+      );
+
+
+      if(!rx){
+
+        return res.status(404).json({
+          success:false,
+          message:"Prescription not found"
+        });
+
+      }
+
+
+
+      /*
+        ===============================
+        LOGO PATH
+        ===============================
+      */
+
+
+      const fs = require("fs");
+
+let clinicLogo = null;
+
+if (rx.company_logo) {
+
+  const logoPaths = [
+    path.join(__dirname, "../Images", rx.company_logo),
+    path.join(process.cwd(), "Images", rx.company_logo),
+    path.join(__dirname, "../../Images", rx.company_logo),
+  ];
+
+
+  for (const logoPath of logoPaths) {
+
+    if (fs.existsSync(logoPath)) {
+
+      clinicLogo = fs.readFileSync(logoPath);
+
+      console.log(
+        "Prescription logo loaded:",
+        logoPath
+      );
+
+      break;
+    }
+
+  }
+
+}
+
+
+      const clinicName =
+        rx.company_name ||
+        "Hospital";
+
+
+
+      /*
+        ===============================
+        JSON DATA
+        ===============================
+      */
+
+
+      const medicines =
+        safeParse(rx.medicines_json);
+
+
+      const tests =
+        safeParse(rx.tests_json);
+
+
+      const consultations =
+        safeParse(rx.consultation_type_json);
+
+
+
+      /*
+        ===============================
+        BUILD PDF
+        ===============================
+      */
+
+
+      const pdfBuffer =
+        await buildPrescriptionPDF({
+
+          clinic:{
+
+            name:clinicName,
+
+            logo:clinicLogo,
+
+            phone:
+              rx.clinic_phone || "",
+
+            email:
+              rx.clinic_email || "",
+
+            address:
+              rx.clinic_address || ""
+
+          },
+
+
+          branch:
+            rx.branch ||
+            rx.doctor_branch ||
+            "—",
+
+
+
+          patient:{
+
+            id:clientId,
+
+            name:
+              req.user.name || "—"
+
+          },
+
+
+
+          doctor:{
+
+            id:
+              rx.doctor_id,
+
+            name:
+              rx.doctor_name || "—",
+
+            qualification:
+              rx.doctor_qualification || ""
+
+          },
+
+
+
+          appointment:{
+
+            id:
+              rx.appointment_id,
+
+            appointment_date:
+              rx.appointment_date || null
+
+          },
+
+
+
+          medicines,
+
+          tests,
+
+          consultations,
+
+notes: {
+  chiefComplaint: rx.appointment_purpose || "",
+  treatmentPlan: rx.description || "",
+  doctorNotes: rx.notes || "",
+},
+
+
+        });
+
+
+
+      res.setHeader(
+        "Content-Type",
+        "application/pdf"
+      );
+
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=prescription_${id}.pdf`
+      );
+
+
+      res.send(pdfBuffer);
+
+
+
+    }
+    catch(err){
+
+      console.error(
+        "Client prescription download error:",
+        err
+      );
+
+
+      res.status(500).json({
+
+        success:false,
+
+        message:
+          err.message ||
+          "Failed to download prescription"
+
+      });
+
+    }
+
+  }
+);
 module.exports = router;

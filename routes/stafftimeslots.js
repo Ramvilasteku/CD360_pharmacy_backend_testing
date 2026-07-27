@@ -610,7 +610,7 @@ router.get(
       /* ===============================
          👤 CLIENT VALIDATION
       =============================== */
-      if (role === "client" && !branch) {
+      if (role === "client" && !doctorId) {
         return res.status(400).json({
           message: "branch is required for client",
         });
@@ -619,6 +619,10 @@ router.get(
       /* ===============================
          MAIN QUERY
       =============================== */
+
+      let queryAdminId = adminId;
+
+
       let query = `
         SELECT
           sts.id,
@@ -636,7 +640,26 @@ router.get(
           AND s.role = 'doctor'
       `;
 
-      const params = [adminId];
+    if (role === "client") {
+        const [[doctor]] = await db.query(
+          `SELECT admin_id
+     FROM staff
+     WHERE id = ?
+       AND role = 'doctor'
+       AND status = 1`,
+          [doctorId]
+        );
+      if (!doctor) {
+          return res.status(404).json({
+            message: "Doctor not found",
+          });
+        }
+
+        queryAdminId = doctor.admin_id;
+      }
+
+      const params = [queryAdminId];
+
 
       if (role === "doctor") {
         query += ` AND s.id = ? `;
@@ -653,14 +676,9 @@ router.get(
         }
       }
 
-      if (role === "client") {
-        query += ` AND TRIM(LOWER(s.branch)) = ? `;
-        params.push(branch);
-
-        if (doctorId) {
-          query += ` AND s.id = ? `;
-          params.push(Number(doctorId));
-        }
+     if (role === "client") {
+        query += ` AND s.id = ? `;
+        params.push(Number(doctorId));
       }
 
       if (date) {
@@ -677,9 +695,13 @@ router.get(
         branch:
           role === "receptionist"
             ? enforcedBranch
-            : role === "client"
-            ? branch
             : null,
+             doctorId:
+          role === "client"
+            ? Number(doctorId)
+            : doctorId
+              ? Number(doctorId)
+              : null,
         doctorId: doctorId ? Number(doctorId) : null,
         totalUnbookedSlots: slots.length,
         slots,

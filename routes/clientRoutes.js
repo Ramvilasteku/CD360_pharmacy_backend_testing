@@ -183,6 +183,12 @@ router.get(
         [adminId]
       );
 
+      // const [patients] = await db.execute(
+      //   `SELECT *
+      //    FROM clients`
+        
+      // );
+
       res.json({ success: true, data: patients });
     } catch (err) {
       console.error(err);
@@ -810,6 +816,16 @@ router.get(
          ORDER BY c.id DESC`,
         [adminId, branch]
       );
+
+      //  const [clients] = await db.execute(
+      //   `SELECT c.*
+      //    FROM clients c
+      //    JOIN staff s 
+      //    WHERE  s.branch = ?
+      //    GROUP BY c.id
+      //    ORDER BY c.id DESC`,
+      //   [ branch]
+      // );
 
       res.json({ success: true, data: clients });
     } catch (err) {

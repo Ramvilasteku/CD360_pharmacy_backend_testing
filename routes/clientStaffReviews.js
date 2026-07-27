@@ -250,26 +250,45 @@ router.get(
       doctorId = doctorId ? Number(doctorId) : null;
       appointment_id = appointment_id ? Number(appointment_id) : null;
 
-      const adminId = role === "admin" ? userId : tokenAdminId;
+      let whereClause = "";
+      let params = [];
+      let adminId = null;
 
-      let whereClause = `csr.admin_id = ?`;
-      const params = [adminId];
-
-      /* =========================
-         ROLE BASED ACCESS
-      ========================== */
-
-      // CLIENT → only own reviews
       if (role === "client") {
-        whereClause += ` AND csr.client_id = ?`;
-        params.push(userId);
+        whereClause = "csr.client_id = ?";
+        params = [userId];
+      } else {
+        adminId = role === "admin" ? userId : tokenAdminId;
+
+        whereClause = "csr.admin_id = ?";
+        params = [adminId];
       }
 
-      // DOCTOR → only own reviews
-      if (role === "doctor") {
-        whereClause += ` AND csr.staff_id = ?`;
-        params.push(userId);
-      }
+if (role === "doctor") {
+
+  const [[doctor]] = await db.query(
+    `
+    SELECT id
+    FROM staff
+    WHERE id = ?
+      AND role = 'doctor'
+      AND status = 1
+    `,
+    [userId]
+  );
+
+
+  if (!doctor) {
+    return res.status(403).json({
+      success:false,
+      message:"Doctor not found"
+    });
+  }
+
+
+  whereClause += ` AND csr.staff_id = ?`;
+  params.push(doctor.id);
+}
 
       // RECEPTIONIST → FORCE OWN BRANCH ONLY
       if (role === "receptionist") {

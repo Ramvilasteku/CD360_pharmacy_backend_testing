@@ -136,92 +136,179 @@ function drawTable(doc, cols, rows, startY) {
    Col C: Phone, Email, Address
 ═══════════════════════════════════════════════ */
 async function drawHeader(doc, clinic, branch, logoBuffer) {
-  const HDR_H = 74;
-  const COL_AW = 205;
-  const COL_BW = 150;
+
+  const HDR_H = 80;
+
+  const COL_AW = 250;
 
   /* white background */
-  doc.save().rect(0, 0, PAGE_W, HDR_H).fill(WHITE).restore();
+  doc.save()
+    .rect(0,0,PAGE_W,HDR_H)
+    .fill(WHITE)
+    .restore();
 
-  /* ── COL A: Logo + Name + Branch ── */
-  const LSIZE = 50;
-  const lx = ML;
-  const ly = (HDR_H - LSIZE) / 2;
+
+  /* ================================
+      LEFT SIDE : LOGO + COMPANY INFO
+  ================================= */
+
+  const LSIZE = 52;
+
+  const logoX = ML;
+  const logoY = 14;
+
 
   if (logoBuffer) {
     try {
-      doc.image(logoBuffer, lx, ly, { width: LSIZE, height: LSIZE });
-    } catch {}
+      doc.image(
+        logoBuffer,
+        logoX,
+        logoY,
+        {
+          width: LSIZE,
+          height: LSIZE
+        }
+      );
+    }
+    catch(err){
+      console.log("Header logo error",err.message);
+    }
   }
 
-  const nameX = logoBuffer ? lx + LSIZE + 10 : lx;
-  const nameW = COL_AW - (nameX - ML) - 10;
+
+  const textX = logoBuffer
+      ? logoX + LSIZE + 12
+      : ML;
+
+
+  const textW = COL_AW - (textX - ML);
+
+
+
+  // COMPANY NAME
 
   doc.save()
-    .fontSize(10)
     .font("Helvetica-Bold")
+    .fontSize(13)
     .fillColor(TEXT_DARK)
-    .text(clinic.name || "", 0, 18, { width: PAGE_W, align: "center" })
+    .text(
+      clinic.name || "Hospital",
+      textX,
+      18,
+      {
+        width:textW,
+        lineBreak:false,
+        ellipsis:true
+      }
+    )
     .restore();
+
+
+
+  // ADDRESS
+
+  let addressY = 36;
+
+
+  if(clinic.address){
+
+    doc.save()
+      .font("Helvetica")
+      .fontSize(7.5)
+      .fillColor(TEXT_MUTED)
+      .text(
+        clinic.address,
+        textX,
+        addressY,
+        {
+          width:textW,
+          height:32,
+          ellipsis:true
+        }
+      )
+      .restore();
+
+      addressY += 14;
+  }
+
+
+
+  // BRANCH
 
   doc.save()
-    .fontSize(8)
     .font("Helvetica")
+    .fontSize(7.5)
     .fillColor(TEXT_MUTED)
-    .text("Branch: " + (branch || "—"), 0, 40, { width: PAGE_W, align: "center" })
+    .text(
+      "Branch: " + (branch || "—"),
+      textX,
+      addressY,
+      {
+        width:textW,
+        lineBreak:false
+      }
+    )
     .restore();
 
-  /* ── COL B: Issued date ── */
-  const bX = ML + COL_AW + 14;
 
-  // doc.save()
-  //    .fontSize(8)
-  //    .font("Helvetica")
-  //    .fillColor(TEXT_MUTED)
-  //    .text(
-  //      "Issued: " +
-  //        new Date().toLocaleDateString("en-IN", {
-  //          day: "2-digit",
-  //          month: "short",
-  //          year: "numeric",
-  //        }),
-  //      bX,
-  //      30,
-  //      { width: COL_BW - 20 }
-  //    )
-  //    .restore();
 
-  /* ── COL C: Contact info ── */
-  const cX = ML + COL_AW + COL_BW + 14;
-  const cW = PAGE_W - cX - MR;
+  /* ================================
+      RIGHT SIDE CONTACT
+  ================================= */
 
-  const contacts = [
-    clinic.phone   ? "Phone:"+clinic.phone   : null,
-    clinic.email   ? "Email:"+ clinic.email   : null,
-    clinic.address ? clinic.address       : null,
+
+  const cX = PAGE_W - MR - 150;
+
+
+  const contacts=[
+    clinic.phone ? "Phone: "+clinic.phone:null,
+    clinic.email ? "Email: "+clinic.email:null
   ].filter(Boolean);
 
-  let cy = 18;
-  contacts.forEach((line) => {
+
+
+  let cy=20;
+
+
+  contacts.forEach(line=>{
+
     doc.save()
-       .fontSize(8)
-       .font("Helvetica")
-       .fillColor(TEXT_DARK)
-       .text(line, cX, cy, { width: cW, lineBreak: false, ellipsis: true })
-       .restore();
-    cy += 14;
+      .font("Helvetica")
+      .fontSize(8)
+      .fillColor(TEXT_DARK)
+      .text(
+        line,
+        cX,
+        cy,
+        {
+          width:150,
+          align:"right",
+          lineBreak:false
+        }
+      )
+      .restore();
+
+
+    cy+=14;
+
   });
 
-  /* bottom divider */
+
+
+  /* bottom line */
+
   doc.save()
-     .strokeColor(BORDER)
-     .lineWidth(1)
-     .moveTo(ML, HDR_H)
-     .lineTo(PAGE_W - MR, HDR_H)
-     .stroke()
-     .restore();
+    .strokeColor(BORDER)
+    .lineWidth(1)
+    .moveTo(ML,HDR_H)
+    .lineTo(PAGE_W-MR,HDR_H)
+    .stroke()
+    .restore();
+
+
 
   return HDR_H + 12;
+
 }
 
 

@@ -392,7 +392,8 @@ router.get(
       let where  = ["b.admin_id = ?"];
       let params = [adminId];
  
-      if (role === "client") { where.push("b.client_id = ?"); params.push(userId); }
+      // if (role === "client") { where.push("b.client_id = ?"); params.push(userId); }
+      if (role === "client") { where=["b.client_id = ?"]; params=[userId]; }
       if ((role === "admin" || role === "receptionist") && client_id) {
         where.push("b.client_id = ?"); params.push(client_id);
       }
@@ -401,41 +402,53 @@ router.get(
  
       const [rows] = await db.query(
         `SELECT
-            b.id AS bill_id,
-            b.appointment_id,
-            b.prescription_id,
-            b.client_id,
-            b.staff_id,
- 
-            b.subtotal,
- 
-            b.discount_percentage,
-            b.discount_amount,
- 
-            b.tax_percentage,
-            b.tax_amount,
- 
-            b.total_amount,
- 
-            b.bill_status,
-            b.notes,
-            b.created_at,
-            b.bill_breakdown_json,
-           c.name             AS client_name,
-           s.name             AS staff_name,
-           s.role             AS staff_role,
-           s.branch,
-           p.consultation_type_json,
-           p.medicines_json,
-           p.tests_json,
-           doc.name           AS doctor_name
-         FROM bills b
-         JOIN clients c            ON c.id   = b.client_id
-         LEFT JOIN staff s         ON s.id   = b.staff_id
-         LEFT JOIN prescriptions p ON p.id   = b.prescription_id
-         LEFT JOIN staff doc       ON doc.id = p.doctor_id
-         WHERE ${where.join(" AND ")}
-         ORDER BY b.created_at DESC`,
+        b.id AS bill_id,
+        b.appointment_id,
+        b.prescription_id,
+        b.client_id,
+        b.staff_id,
+        b.admin_id,
+
+        b.subtotal,
+
+        b.discount_percentage,
+        b.discount_amount,
+
+        b.tax_percentage,
+        b.tax_amount,
+
+        b.total_amount,
+
+        b.bill_status,
+        b.notes,
+        b.created_at,
+        b.bill_breakdown_json,
+
+        c.name AS client_name,
+        s.name AS staff_name,
+        s.role AS staff_role,
+        s.branch,
+
+        p.consultation_type_json,
+        p.medicines_json,
+        p.tests_json,
+
+        doc.name AS doctor_name,
+
+        -- Admin Details
+        a.company_name,
+        a.company_logo,
+        a.name AS admin_name
+
+        FROM bills b
+        JOIN clients c            ON c.id = b.client_id
+        LEFT JOIN staff s         ON s.id = b.staff_id
+        LEFT JOIN prescriptions p ON p.id = b.prescription_id
+        LEFT JOIN staff doc       ON doc.id = p.doctor_id
+        LEFT JOIN admins a        ON a.id = b.admin_id
+
+        WHERE ${where.join(" AND ")}
+        ORDER BY b.created_at DESC`,
         params
       );
  

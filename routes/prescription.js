@@ -238,6 +238,7 @@ router.post("/", authMiddleware, async (req, res) => {
       chiefComplaint,
       treatmentPlan,
       doctorNotes,
+      diagnosis,
     } = notes;
 
     if (!patient_id)
@@ -262,8 +263,8 @@ router.post("/", authMiddleware, async (req, res) => {
       `INSERT INTO prescriptions
          (admin_id, patient_id, doctor_id, appointment_id,
           consultation_type_json, medicines_json, tests_json,
-          notes, description, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          notes, description, diagnosis, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?, NOW())`,
       [
         adminId,
         patient_id,
@@ -275,6 +276,7 @@ router.post("/", authMiddleware, async (req, res) => {
 
         doctorNotes || null,      // prescriptions.notes
         treatmentPlan || null,    // prescriptions.description
+        diagnosis || null,        // prescriptions.diagnosis
       ]
     );
 
@@ -1117,6 +1119,7 @@ router.get("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
         consultations: safeParse(rx.consultation_type_json),
         notes: rx.notes || "",
         description: rx.description || "",
+        diagnosis: rx.diagnosis || "",
         created_at: rx.created_at,
         updated_at: rx.updated_at || null,
       },
@@ -1337,6 +1340,7 @@ router.put("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
       chiefComplaint,
       treatmentPlan,
       doctorNotes,
+      diagnosis,
     } = notes;
 
     /* ── Enrich medicines with amount from medicines table ── */
@@ -1370,6 +1374,7 @@ medicines_json=?,
 tests_json=?,
 notes=?,
 description=?,
+diagnosis=?,
 updated_at=NOW()
 WHERE id=? AND admin_id=?
 `,
@@ -1381,7 +1386,7 @@ JSON.stringify(tests),
 
 doctorNotes || null,
 treatmentPlan || null,
-
+diagnosis || null,
 id,
 adminId
 ]

@@ -27,6 +27,7 @@ const superAdmin = require("./routes/superAdminRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const staffRoutes = require("./routes/staffRoutes");
 const clientRoutes = require("./routes/clientRoutes");
+const patientRoutes = require("./routes/patientRoutes");
 const leaveRequest = require("./routes/leaveRequest");
 const staffAttendance = require("./routes/staffAttendance");
 const updateNews = require("./routes/UpdatedNews.js");
@@ -48,8 +49,29 @@ const server = http.createServer(app);
 const path = require("path");
 const { fileURLToPath } = require("url");
 const { authMiddleware } = require("./middlewares/authMiddleware.js");
-const excelRoutes = require("./routes/excel");
 
+// ipdserver
+
+const ipdAdmissionRoutes = require("./routes/ipd/ipdAdmissionRoute.js");
+const ipdWardtypeRoutes = require("./routes/ipd/ipdWardTypeRoutes");
+const ipdRoomsRoutes = require("./routes/ipd/ipdRoomsRoutes");
+const ipdBedsRoutes = require("./routes/ipd/ipdBedsRoutes");
+const ipdBedAllocationRoutes = require("./routes/ipd/ipdBedAllocationsRoutes");
+const ipdDoctorVisitsRoutes = require("./routes/ipd/ipdDoctorVisitsRoutes");
+const ipdLabTestRoutes = require("./routes/ipd/ipdLabTestsRoutes");
+const ipdProceduresRoutes = require("./routes/ipd/ipdProceduresRoutes");
+const ipdNursingChargesRoutes = require("./routes/ipd/ipdNursingChargesRoutes");
+const ipdMisellaneousChargesRoutes = require("./routes/ipd/ipdMisellaneousChargesRoutes");
+const ipdPaymentsRoutes = require("./routes/ipd/ipdPaymentsRoutes");
+const ipdPharmacyIssuesRoutes = require("./routes/ipd/ipdPharmacyIssuesRoutes");
+const { router: ipdBillsRoutes } = require("./routes/ipd/ipdBillsRoutes");
+const {
+  router: ipdBedChargesRoutes,
+} = require("./routes/ipd/ipdBedChargesRoutes");
+
+require("./Cron/bedChargeCron.js");
+
+const ipdAnalyticsRoutes = require("./routes/ipd/ipdAnalyticsRoutes.js");
 
 // ---------- MIDDLEWARE ----------
 app.use(
@@ -77,6 +99,11 @@ app;
 // Test Route
 // app.use("/test", testRoute);
 app.get("/api/modules", authController.loginAuth,authController.getModules);
+app.get(
+  "/api/all-modules",
+  authController.loginAuth,
+  authController.getAllModules
+);
 
 app.get("/api/role-modules/:role", authController.loginAuth, authController.getRoleModules);
 
@@ -88,7 +115,6 @@ app.delete("/api/role-modules/:role",  authController.loginAuth,authController.d
 
 // ---------- PROTECTED ROUTES ----------
 
-app.use("/api/excel", excelRoutes);
 app.use("/api", stafftimeSlots);
 app.use("/service", serviceRequest);
 app.use("/appointment", appointment);
@@ -98,6 +124,7 @@ app.use("/api", superAdmin);
 app.use("/api", adminRoutes);
 app.use("/api", staffRoutes);
 app.use("/api", clientRoutes);
+app.use("/api", patientRoutes);
 app.use("/api", leaveRequest);
 app.use("/api", staffAttendance);
 app.use("/news", updateNews);
@@ -121,6 +148,27 @@ app.use("/api/client/prescriptions", clientPrescriptionsRouter);
 app.use("/landingpage/admin", landingAdmin);
 app.use("/landingpage/contact", landingContact);
 app.use("/landingpage/demo", landingDemo);
+
+// ---------- IPD ROUTES ----------
+app.use("/api", ipdAdmissionRoutes);
+app.use("/api", ipdWardtypeRoutes);
+app.use("/api", ipdRoomsRoutes);
+app.use("/api", ipdBedsRoutes);
+app.use("/api", ipdBedAllocationRoutes);
+app.use("/api", ipdDoctorVisitsRoutes);
+app.use("/api", ipdLabTestRoutes);
+app.use("/api", ipdProceduresRoutes);
+app.use("/api", ipdNursingChargesRoutes);
+app.use("/api", ipdMisellaneousChargesRoutes);
+app.use("/api", ipdBedChargesRoutes);
+app.use("/api", ipdBillsRoutes);
+app.use("/api", ipdPaymentsRoutes);
+app.use("/api", ipdPharmacyIssuesRoutes);
+app.use("/api", ipdAnalyticsRoutes);
+
+// 🔌 SOCKET INIT (OPTIONAL)
+// ======================================================
+initializeSocket(server);
 
 // ---------- START HTTP + WS SERVER ----------
 server.listen(5000, () => {
