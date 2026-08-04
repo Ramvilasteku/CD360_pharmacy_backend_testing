@@ -13,10 +13,10 @@ const { allowRoles }     = require("../middlewares/roleMiddleware");
 const RS = "Rs.";
  
 const C = {
-  primary:    "#3f6f7a",
-  accent:     "#3f6f7a",
-  accentLight:"#d6eaf8",
-  headerText: "#ffffff",
+  primary:    "#ffffff",
+  accent:     "#ffffff",
+  accentLight:"#ffffff",
+  headerText: "#1a1a2e",
   dark:       "#1a1a2e",
   mid:        "#4a4a6a",
   border:     "#d5d8dc",
@@ -257,7 +257,7 @@ router.get(
  
       // Left card — Billed To
       roundedRect(doc, M_LEFT, INFO_Y, CARD_W, CARD_H, 5, "#f8fafd", C.border);
-      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(C.accent)
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(C.dark)
          .text("BILLED TO", M_LEFT + 10, INFO_Y + 10, { characterSpacing: 1 });
       doc.font("Helvetica-Bold").fontSize(12).fillColor(C.dark)
          .text(inv.client_name || "—", M_LEFT + 10, INFO_Y + 22);
@@ -316,7 +316,7 @@ router.get(
       const drawSection = (label) => {
         ensureSpace(18);
         filledRect(doc, M_LEFT, Y, USABLE_W, 18, C.accentLight);
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(C.accent)
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(C.dark)
            .text(label, COL.item.x, Y + 5, { characterSpacing: 0.5 });
         Y += 18;
       };
@@ -350,7 +350,7 @@ router.get(
       ══════════════════════════════════════════════════════════ */
       if (hasBreakdown) {
         if (consultations.length > 0) {
-          drawSection("CONSULTATION FEES");
+          drawSection("");
           consultations.forEach(c => drawRow(c.name || "—", null, null, c.cost));
         }
         if (medicines.length > 0) {
@@ -387,9 +387,9 @@ router.get(
         const cT = consultations.reduce((s, c) => s + Number(c.cost || 0), 0);
         const mT = medicines.reduce((s, m) => s + Number(m.cost ?? m.total_amount ?? 0), 0);
         const tT = tests.reduce((s, t) => s + Number(t.cost || 0), 0);
-        if (consultations.length) totals.push(["Consultation", cT]);
-        if (medicines.length)     totals.push(["Medicines",    mT]);
-        if (tests.length)         totals.push(["Tests",        tT]);
+        // if (consultations.length) totals.push(["Consultation", cT]);
+        // if (medicines.length)     totals.push(["Medicines",    mT]);
+        // if (tests.length)         totals.push(["Tests",        tT]);
       }
       totals.push(["Subtotal", Number(inv.subtotal || 0)]);
  
@@ -421,10 +421,10 @@ router.get(
       ══════════════════════════════════════════════════════════ */
       if (inv.notes) {
         ensureSpace(60);
-        roundedRect(doc, M_LEFT, Y, USABLE_W * 0.55, 50, 4, "#fffde7", "#f9a825");
-        doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#f57f17")
-           .text("NOTES", M_LEFT + 10, Y + 8, { characterSpacing: 1 });
-        doc.font("Helvetica").fontSize(9).fillColor(C.mid)
+        roundedRect(doc, M_LEFT, Y, USABLE_W * 0.55, 50, 4, C.accent, C.accentLight);
+        doc.font("Helvetica-Bold").fontSize(7.5).fillColor(C.dark)
+           .text("NOTE", M_LEFT + 10, Y + 8, { characterSpacing: 1 });
+        doc.font("Helvetica").fontSize(9).fillColor(C.dark)
            .text(inv.notes, M_LEFT + 10, Y + 22, { width: USABLE_W * 0.55 - 20 });
         Y += 60;
       }
@@ -444,11 +444,11 @@ router.get(
  
         const FY = PAGE_H - FOOTER_H;
  
-        filledRect(doc, 0, FY, PAGE_W, FOOTER_H, C.primary);
+        filledRect(doc, 0, FY, PAGE_W, FOOTER_H, C.accent);
         filledRect(doc, 0, FY, PAGE_W, 2, C.accent);
  
         // Left — clinic + contact
-        const footerLeft = [inv.company_name, inv.admin_email, inv.admin_mobile]
+        const footerLeft = []
           .filter(Boolean).join("  ·  ");
         doc.font("Helvetica").fontSize(8).fillColor("rgba(255,255,255,1)")
            .text(footerLeft, M_LEFT, FY + 10, { width: 300, lineBreak: false, ellipsis: true });
@@ -456,8 +456,8 @@ router.get(
         // Center — thank you
       doc.font("Helvetica-Bold")
    .fontSize(8.5)
-   .fillColor("rgba(255,255,255,0.65)") // ✅ visible white
-   .text("Thank you for choosing us!", 0, FY + 10, {
+   .fillColor("rgba(0,0,0,1)") // ✅ visible white
+   .text("This is a computer-generated document and does not require a signature.", 0, FY + 10, {
      align: "center",
      width: PAGE_W,
    });

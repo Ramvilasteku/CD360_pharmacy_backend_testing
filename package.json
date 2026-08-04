@@ -1,5 +1,7 @@
 {
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1097.0",
+    "@aws-sdk/s3-request-presigner": "^3.1097.0",
     "axios": "^1.18.1",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
@@ -7,6 +9,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "fs-extra": "^11.4.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.2.0",
     "mysql2": "^3.15.3",
@@ -14,9 +17,10 @@
     "nodemailer": "^7.0.12",
     "nodemon": "^3.1.11",
     "pdfkit": "^0.17.2",
+    "puppeteer": "^25.4.0",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.2"
   },
   "name": "server",
   "version": "1.0.0",

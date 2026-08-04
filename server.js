@@ -166,9 +166,7 @@ app.use("/api", ipdPaymentsRoutes);
 app.use("/api", ipdPharmacyIssuesRoutes);
 app.use("/api", ipdAnalyticsRoutes);
 
-// 🔌 SOCKET INIT (OPTIONAL)
-// ======================================================
-initializeSocket(server);
+
 
 // ---------- START HTTP + WS SERVER ----------
 server.listen(5000, () => {

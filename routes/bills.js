@@ -112,13 +112,13 @@ router.post(
 
  
 
-   if (!appointment_id || subtotal <= 0) {  
+   if (!appointment_id) {  
 
         return res.status(400).json({ 
 
           success: false, 
 
-          message: "Missing required fields: appointment_id, subtotal, total_amount", 
+          message: "Missing required fields: appointment_id", 
 
         }); 
 
@@ -611,13 +611,13 @@ tax_percentage = normalizeNumber(tax_percentage) ?? 0;
 notes = normalizeString(notes);
 bill_status = normalizeString(bill_status);
  
-        if (subtotal <= 0) {
-  await connection.rollback();
-  return res.status(400).json({
-    success: false,
-    message: "Subtotal must be greater than 0",
-  });
-}
+//         if (subtotal <= 0) {
+//   await connection.rollback();
+//   return res.status(400).json({
+//     success: false,
+//     message: "Subtotal must be greater than 0",
+//   });
+// }
  
  const discountAmount = Number(
   ((subtotal * discount_percentage) / 100).toFixed(2)

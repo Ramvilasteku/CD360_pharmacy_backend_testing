@@ -4,6 +4,19 @@ const db = require("../db.js");
 const nodemailer = require("nodemailer"); // npm i nodemailer
 const { authMiddleware } = require("../middlewares/authMiddleware");
 const { allowRoles } = require("../middlewares/roleMiddleware");
+const fs = require("fs-extra");
+
+const path = require("path");
+
+const { v4: uuid } = require("uuid");
+
+const generatePrescriptionPdf = require("../utils/generatePrescriptionPdf");
+
+const uploadPrescription =
+  require("../services/aceCloudStorage");
+
+const sendWhatsapp =
+  require("../services/whatsappservice");
 
 /* ============================================================
    Helper
@@ -17,8 +30,8 @@ function getAdminIdFromUser(user) {
    MAIL_HOST, MAIL_PORT, MAIL_USER, MAIL_PASS, MAIL_FROM
 ============================================================ */
 const transporter = nodemailer.createTransport({
-  host:   process.env.MAIL_HOST  || "smtp.gmail.com",
-  port:   Number(process.env.MAIL_PORT) || 587,
+  host: process.env.MAIL_HOST || "smtp.gmail.com",
+  port: Number(process.env.MAIL_PORT) || 587,
   secure: false,
   auth: {
     user: process.env.MAIL_USER,
@@ -143,11 +156,11 @@ router.post(
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           patient_id,
-          doctor_id   || null,
+          doctor_id || null,
           adminId,
           JSON.stringify(medicines_json || []),
-          JSON.stringify(tests_json     || []),
-          notes       || null,
+          JSON.stringify(tests_json || []),
+          notes || null,
           description || null,
         ]
       );
@@ -303,7 +316,7 @@ router.get(
         try {
           medicines = JSON.parse(r.medicines_json || "[]");
           tests = JSON.parse(r.tests_json || "[]");
-        } catch (e) {}
+        } catch (e) { }
 
         return {
           resource: {
@@ -317,9 +330,9 @@ router.get(
             },
             requester: r.doctor_id
               ? {
-                  reference: `Practitioner/${r.doctor_id}`,
-                  display: r.doctor_name
-                }
+                reference: `Practitioner/${r.doctor_id}`,
+                display: r.doctor_name
+              }
               : undefined,
             authoredOn: r.created_at || new Date().toISOString(),
 
@@ -472,11 +485,11 @@ router.put(
          WHERE id=? AND admin_id=?`,
         [
           patient_id,
-          doctor_id   || null,
-          notes       || null,
+          doctor_id || null,
+          notes || null,
           description || null,
           JSON.stringify(medicines_json || []),
-          JSON.stringify(tests_json     || []),
+          JSON.stringify(tests_json || []),
           req.params.id,
           adminId,
         ]
@@ -551,26 +564,26 @@ router.post(
       }
 
       const emailPayload = {
-        patient:     { id: rx.patient_id, name: rx.patient_name },
-        doctor:      { id: rx.doctor_id,  name: rx.doctor_name  },
-        diagnosis:   rx.diagnosis   || "",
-        notes:       rx.notes       || "",
+        patient: { id: rx.patient_id, name: rx.patient_name },
+        doctor: { id: rx.doctor_id, name: rx.doctor_name },
+        diagnosis: rx.diagnosis || "",
+        notes: rx.notes || "",
         description: rx.description || "",
-        medicines:   JSON.parse(rx.medicines_json || "[]"),
-        tests:       JSON.parse(rx.tests_json     || "[]"),
+        medicines: JSON.parse(rx.medicines_json || "[]"),
+        tests: JSON.parse(rx.tests_json || "[]"),
         clinic: {
-          name:    process.env.CLINIC_NAME    || "HealthCare Clinic",
+          name: process.env.CLINIC_NAME || "HealthCare Clinic",
           tagline: process.env.CLINIC_TAGLINE || "Compassionate Care, Expert Treatment",
           address: process.env.CLINIC_ADDRESS || "123 Medical Street, City",
-          email:   process.env.MAIL_FROM      || "clinic@example.com",
+          email: process.env.MAIL_FROM || "clinic@example.com",
         },
       };
 
       await transporter.sendMail({
-        from:    `"${emailPayload.clinic.name}" <${process.env.MAIL_FROM}>`,
-        to:      rx.patient_email,
+        from: `"${emailPayload.clinic.name}" <${process.env.MAIL_FROM}>`,
+        to: rx.patient_email,
         subject: `Your Prescription from ${emailPayload.clinic.name}`,
-        html:    buildEmailHtml(emailPayload),
+        html: buildEmailHtml(emailPayload),
       });
 
       res.json({ success: true, message: `Prescription sent to ${rx.patient_email}` });
@@ -578,6 +591,245 @@ router.post(
       console.error("Send mail error:", err);
       res.status(500).json({ success: false, message: "Failed to send email: " + err.message });
     }
+  }
+);
+
+router.post(
+  "/:id/send-whatsapp",
+  authMiddleware,
+  allowRoles("admin", "doctor", "receptionist"),
+  async (req, res) => {
+
+    let pdf = null;
+
+    try {
+
+      const adminId = getAdminIdFromUser(req.user);
+
+      const [rows] = await db.execute(
+
+        `SELECT
+                    p.*,
+
+                    pt.name       AS patient_name,
+
+                    pt.email      AS patient_email,
+
+                    pt.mobile  AS whatsapp,
+
+                    s.full_name   AS doctor_name,
+
+                    a.company_name         AS admin_name
+
+                FROM prescriptions p
+
+                LEFT JOIN clients pt
+                ON pt.id=p.patient_id
+
+                LEFT JOIN staff s
+                ON s.id=p.doctor_id
+
+                LEFT JOIN admins a
+                ON a.id=p.admin_id
+
+                WHERE
+                    p.id=?
+                AND
+                    p.admin_id=?`,
+
+        [
+          req.params.id,
+          adminId
+        ]
+
+      );
+
+
+
+      if (!rows.length) {
+
+        return res.status(404).json({
+
+          success: false,
+
+          message: "Prescription not found"
+
+        });
+
+      }
+
+
+
+      const rx = rows[0];
+
+
+
+      if (!rx.whatsapp) {
+
+        return res.status(400).json({
+
+          success: false,
+
+          message: "Patient WhatsApp number not found."
+
+        });
+
+      }
+
+
+
+      const payload = {
+
+        patient: {
+          id: rx.patient_id,
+          name: rx.patient_name
+        },
+
+        doctor: {
+          id: rx.doctor_id,
+          name: rx.doctor_name
+        },
+
+        diagnosis: rx.diagnosis || "",
+
+        notes: rx.notes || "",
+
+        description: rx.description || "",
+
+        medicines: JSON.parse(rx.medicines_json || "[]"),
+
+        tests: JSON.parse(rx.tests_json || "[]"),
+
+        clinic: {
+
+          name: rx.admin_name || ""
+
+        }
+
+      };
+
+
+
+      // Generate PDF
+
+      pdf = await generatePrescriptionPdf(payload);
+
+
+
+      // Upload PDF
+
+      const upload =
+
+        await uploadAndGenerateUrl(
+
+          pdf.pdfPath,
+
+          pdf.fileName
+
+        );
+
+
+
+      // Save URL
+
+      await db.execute(
+
+        `UPDATE prescriptions
+
+                SET prescription_url=?
+
+                WHERE id=?`,
+
+        [
+
+          upload.url,
+
+          rx.id
+
+        ]
+
+      );
+
+
+
+      // Send WhatsApp
+
+      const whatsapp =
+
+        await sendPrescription({
+
+          phone: rx.whatsapp,
+
+          patientName: rx.patient_name,
+
+          doctorName: rx.doctor_name,
+
+          clinicName: rx.admin_name || "",
+
+          prescriptionUrl: upload.url
+
+        });
+
+
+
+      if (!whatsapp.success) {
+
+        return res.status(500).json({
+
+          success: false,
+
+          message: "Unable to send WhatsApp.",
+
+          error: whatsapp.error
+
+        });
+
+      }
+
+
+
+      // Delete temp PDF
+
+      await fs.remove(
+
+        pdf.pdfPath
+
+      );
+
+
+
+      res.json({
+
+        success: true,
+
+        message: "Prescription sent successfully.",
+
+        url: upload.url
+
+      });
+
+    }
+
+    catch (err) {
+
+      console.log(err);
+
+      if (pdf) {
+
+        await fs.remove(pdf.pdfPath);
+
+      }
+
+      res.status(500).json({
+
+        success: false,
+
+        message: err.message
+
+      });
+
+    }
+
   }
 );
 

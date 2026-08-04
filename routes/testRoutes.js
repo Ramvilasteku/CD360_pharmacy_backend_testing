@@ -74,7 +74,7 @@ router.get(
 
       const [rows] = await db.execute(
         `
-        SELECT id, test_name, test_type, description, created_at
+        SELECT id, test_name, test_type, description, created_at, amount
         FROM tests
         WHERE admin_id = ?
         ORDER BY created_at DESC

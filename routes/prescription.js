@@ -7,6 +7,17 @@ const { authMiddleware } = require("../middlewares/authMiddleware");
 const { allowRoles } = require("../middlewares/roleMiddleware");
 const { sendPrescriptionEmail } = require("../utils/mailer");
 const buildPrescriptionPDF = require("../utils/buildPrescriptionPdf");
+const fs = require("fs-extra");
+
+const { v4: uuid } = require("uuid");
+
+const generatePrescriptionPdf = require("../utils/generatePrescriptionPdf");
+
+const { uploadPrescription, uploadAndGenerateUrl } =
+  require("../services/aceCloudStorage");
+
+const { sendPrescription } =
+  require("../services/whatsappservice");
 
 /* ═══════════════════════════════════════════════════════════════════
    HELPERS
@@ -142,11 +153,11 @@ const sendMailForPrescription = async (prescriptionId) => {
     : null;
 
   /* ── NOTES OBJECT (shared shape with frontend) ── */
-    const notesObj = {
-      chiefComplaint: rx.chief_complaint || "",
-      treatmentPlan:  rx.description     || "",
-      doctorNotes:    rx.notes           || "",
-    };
+  const notesObj = {
+    chiefComplaint: rx.chief_complaint || "",
+    treatmentPlan: rx.description || "",
+    doctorNotes: rx.notes || "",
+  };
 
   /* ── BUILD PDF ── */
   const pdfBuffer = await buildPrescriptionPDF({
@@ -171,7 +182,7 @@ const sendMailForPrescription = async (prescriptionId) => {
     medicines,
     tests,
     consultations,
-      notes: notesObj,   
+    notes: notesObj,
   });
 
   /* ── SEND EMAIL ── */
@@ -192,9 +203,9 @@ const sendMailForPrescription = async (prescriptionId) => {
         month: "long",
         year: "numeric",
       }),
-    chiefComplaint: notesObj.chiefComplaint,   
-    treatmentPlan:  notesObj.treatmentPlan,    
-    doctorNotes:    notesObj.doctorNotes,      
+      chiefComplaint: notesObj.chiefComplaint,
+      treatmentPlan: notesObj.treatmentPlan,
+      doctorNotes: notesObj.doctorNotes,
     },
     pdfBuffer
   );
@@ -213,6 +224,450 @@ router.post("/send-mail/:id", authMiddleware, async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
+router.post(
+  "/:id/send-whatsapp",
+  authMiddleware,
+  allowRoles("admin", "doctor", "receptionist"),
+  async (req, res) => {
+
+    let pdf = null;
+
+    try {
+
+      const adminId = getAdminId(req.user);
+
+      const [rows] = await db.execute(
+
+        `SELECT
+        p.id,
+        p.notes,
+        p.description,
+        p.appointment_id,
+        p.medicines_json,
+        p.tests_json,
+        p.consultation_type_json,
+
+        c.id    AS patient_id,
+        c.name  AS patient_name,
+        c.email AS patient_email,
+        c.mobile AS whatsapp,
+
+        s.id            AS doctor_id,
+        s.name          AS doctor_name,
+        s.qualification AS doctor_qualification,
+
+        a.id           AS admin_id,
+        a.company_name AS clinic_name,
+        a.company_logo AS clinic_logo_filename,
+        a.email        AS clinic_email,
+        a.mobile       AS clinic_phone,
+        a.address      AS clinic_address,
+
+        ap.id               AS appointment_id,
+        ap.appointment_date AS appointment_date,
+        ap.selected_branch  AS branch, 
+        ap.purpose          AS chief_complaint 
+     FROM prescriptions p
+     LEFT JOIN clients      c  ON c.id  = p.patient_id
+     LEFT JOIN staff        s  ON s.id  = p.doctor_id
+     LEFT JOIN admins       a  ON a.id  = p.admin_id
+     LEFT JOIN appointments ap ON ap.id = p.appointment_id
+     WHERE p.id = ?`,
+
+        [
+          req.params.id
+        ]
+
+      );
+
+
+
+      if (!rows.length) {
+
+        return res.status(404).json({
+
+          success: false,
+
+          message: "Prescription not found"
+
+        });
+
+      }
+
+
+
+      const rx = rows[0];
+
+      if (!rx.whatsapp) {
+        return res.status(400).json({
+          success: false,
+          message: "Patient WhatsApp number not found."
+        });
+      }
+
+      /* ── Build the fields the payload needs ── */
+      const SITE_URL = process.env.SITE_URL || "http://localhost:5000";
+      const clinicLogoUrl = rx.clinic_logo_filename
+        ? `${SITE_URL}/Images/${rx.clinic_logo_filename}`
+        : null;
+
+      const medicines = safeParse(rx.medicines_json);
+      const tests = safeParse(rx.tests_json);
+      const consultations = safeParse(rx.consultation_type_json);
+
+      const notesObj = {
+        chiefComplaint: rx.chief_complaint || "",
+        treatmentPlan: rx.description || "",
+        doctorNotes: rx.notes || "",
+      };
+
+
+
+      const payload = {
+
+        // patient: {
+        //   id: rx.patient_id,
+        //   name: rx.patient_name
+        // },
+
+        // doctor: {
+        //   id: rx.doctor_id,
+        //   name: rx.doctor_name
+        // },
+
+        // diagnosis: rx.diagnosis || "",
+
+        // notes: rx.notes || "",
+
+        // description: rx.description || "",
+
+        // medicines: safeParse(rx.medicines_json),
+
+        // tests: safeParse(rx.tests_json),
+
+        // clinic: {
+
+        //   name: rx.admin_name || ""
+
+        // },
+        clinic: {
+          name: rx.clinic_name || "—",
+          logo: clinicLogoUrl, // ✅ URL for PDF
+          email: rx.clinic_email || "—",
+          phone: rx.clinic_phone || "—",
+          address: rx.clinic_address || "—",
+        },
+        branch: rx.branch || "—",
+        patient: { id: rx.patient_id, name: rx.patient_name || "—" },
+        doctor: {
+          id: rx.doctor_id,
+          name: rx.doctor_name || "—",
+          qualification: rx.doctor_qualification || "",
+        },
+        appointment: {
+          id: rx.appointment_id,
+          appointment_date: rx.appointment_date || null,
+        },
+        medicines,
+        tests,
+        consultations,
+        notes: notesObj,
+
+      };
+
+
+
+      // Generate PDF
+
+      pdf = await generatePrescriptionPdf(payload);
+
+
+
+      // Upload PDF
+
+      const upload =
+
+        await uploadAndGenerateUrl(
+
+          pdf.pdfPath,
+
+          pdf.fileName
+
+        );
+
+
+
+      // Save URL
+
+      await db.execute(
+
+        `UPDATE prescriptions
+
+                SET prescription_url=?
+
+                WHERE id=?`,
+
+        [
+
+          upload.url,
+
+          rx.id
+
+        ]
+
+      );
+
+
+
+      // Send WhatsApp
+
+      const whatsapp =
+
+        await sendPrescription({
+
+          phone: `91${rx.whatsapp}`,
+
+          patientName: rx.patient_name,
+
+          doctorName: rx.doctor_name,
+
+          clinicName: rx.clinic_name || "",
+
+          prescriptionUrl: upload.url
+
+        });
+
+
+
+      if (!whatsapp.success) {
+
+        return res.status(500).json({
+
+          success: false,
+
+          message: "Unable to send WhatsApp.",
+
+          error: whatsapp.error
+
+        });
+
+      }
+
+
+
+      // Delete temp PDF
+
+      await fs.remove(
+
+        pdf.pdfPath
+
+      );
+
+
+
+      res.json({
+
+        success: true,
+
+        message: "Prescription sent successfully.",
+
+        url: upload.url
+
+      });
+
+    }
+
+    catch (err) {
+
+      console.log(err);
+
+      if (pdf) {
+
+        await fs.remove(pdf.pdfPath);
+
+      }
+
+      res.status(500).json({
+
+        success: false,
+
+        message: err.message
+
+      });
+
+    }
+
+  }
+);
+
+router.post(
+  "/:id/share-whatsapp",
+  authMiddleware,
+  allowRoles("admin", "doctor", "receptionist"),
+  async (req, res) => {
+    let pdf = null;
+ 
+    try {
+      const adminId = getAdminId(req.user);
+ 
+      /* ── 1. Validate the target number from the request body ── */
+      const rawPhone = (req.body.phone || "").toString().trim();
+ 
+      // keep digits only (strip spaces, +, -, etc.)
+      let digits = rawPhone.replace(/\D/g, "");
+ 
+      // if a leading country code / zero was included, normalise to 10 digits
+      if (digits.length > 10 && digits.startsWith("91")) {
+        digits = digits.slice(-10);
+      } else if (digits.length === 11 && digits.startsWith("0")) {
+        digits = digits.slice(1);
+      }
+ 
+      if (digits.length !== 10) {
+        return res.status(400).json({
+          success: false,
+          message: "Please provide a valid 10-digit WhatsApp number.",
+        });
+      }
+ 
+      const targetPhone = `91${digits}`;
+ 
+      /* ── 2. Fetch the prescription (admin-scoped) ── */
+      const [rows] = await db.execute(
+        `SELECT
+            p.id,
+            p.notes,
+            p.description,
+            p.appointment_id,
+            p.medicines_json,
+            p.tests_json,
+            p.consultation_type_json,
+            p.prescription_url,
+ 
+            c.id    AS patient_id,
+            c.name  AS patient_name,
+ 
+            s.id            AS doctor_id,
+            s.name          AS doctor_name,
+            s.qualification AS doctor_qualification,
+ 
+            a.id           AS admin_id,
+            a.company_name AS clinic_name,
+            a.company_logo AS clinic_logo_filename,
+            a.email        AS clinic_email,
+            a.mobile       AS clinic_phone,
+            a.address      AS clinic_address,
+ 
+            ap.id               AS appointment_id,
+            ap.appointment_date AS appointment_date,
+            ap.selected_branch  AS branch,
+            ap.purpose          AS chief_complaint
+         FROM prescriptions p
+         LEFT JOIN clients      c  ON c.id  = p.patient_id
+         LEFT JOIN staff        s  ON s.id  = p.doctor_id
+         LEFT JOIN admins       a  ON a.id  = p.admin_id
+         LEFT JOIN appointments ap ON ap.id = p.appointment_id
+         WHERE p.id = ? AND p.admin_id = ?`,
+        [req.params.id, adminId]
+      );
+ 
+      if (!rows.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Prescription not found",
+        });
+      }
+ 
+      const rx = rows[0];
+ 
+      /* ── 3. Reuse saved URL, or generate + upload if missing ── */
+      let prescriptionUrl = rx.prescription_url;
+ 
+      if (!prescriptionUrl) {
+        const SITE_URL = process.env.SITE_URL || "http://localhost:5000";
+        const clinicLogoUrl = rx.clinic_logo_filename
+          ? `${SITE_URL}/Images/${rx.clinic_logo_filename}`
+          : null;
+ 
+        const medicines     = safeParse(rx.medicines_json);
+        const tests         = safeParse(rx.tests_json);
+        const consultations = safeParse(rx.consultation_type_json);
+ 
+        const notesObj = {
+          chiefComplaint: rx.chief_complaint || "",
+          treatmentPlan:  rx.description     || "",
+          doctorNotes:    rx.notes           || "",
+        };
+ 
+        const payload = {
+          clinic: {
+            name:    rx.clinic_name || "—",
+            logo:    clinicLogoUrl,
+            email:   rx.clinic_email || "—",
+            phone:   rx.clinic_phone || "—",
+            address: rx.clinic_address || "—",
+          },
+          branch: rx.branch || "—",
+          patient: { id: rx.patient_id, name: rx.patient_name || "—" },
+          doctor: {
+            id: rx.doctor_id,
+            name: rx.doctor_name || "—",
+            qualification: rx.doctor_qualification || "",
+          },
+          appointment: {
+            id: rx.appointment_id,
+            appointment_date: rx.appointment_date || null,
+          },
+          medicines,
+          tests,
+          consultations,
+          notes: notesObj,
+        };
+ 
+        pdf = await generatePrescriptionPdf(payload);
+        const upload = await uploadAndGenerateUrl(pdf.pdfPath, pdf.fileName);
+        prescriptionUrl = upload.url;
+ 
+        // persist so future shares reuse it
+        await db.execute(
+          `UPDATE prescriptions SET prescription_url = ? WHERE id = ?`,
+          [prescriptionUrl, rx.id]
+        );
+      }
+ 
+      /* ── 4. Send to the target number (same prescription template) ── */
+      const whatsapp = await sendPrescription({
+        phone: targetPhone,
+        patientName: rx.patient_name || "Patient",
+        doctorName: rx.doctor_name || "—",
+        clinicName: rx.clinic_name || "",
+        prescriptionUrl,
+      });
+ 
+      if (!whatsapp.success) {
+        return res.status(500).json({
+          success: false,
+          message: "Unable to share prescription on WhatsApp.",
+          error: whatsapp.error,
+        });
+      }
+ 
+      // clean up only if we generated a temp file this time
+      if (pdf) await fs.remove(pdf.pdfPath);
+ 
+      res.json({
+        success: true,
+        message: `Prescription shared to ${targetPhone}.`,
+        url: prescriptionUrl,
+      });
+    } catch (err) {
+      console.log(err);
+      if (pdf) await fs.remove(pdf.pdfPath);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  }
+);
 
 /* ═══════════════════════════════════════════════════════════════════
    ➕ CREATE PRESCRIPTION
@@ -251,14 +706,14 @@ router.post("/", authMiddleware, async (req, res) => {
     const enrichedMedicines = await enrichMedicinesWithAmount(medicines, adminId);
 
     console.log("[CREATE] Enriched medicines:", JSON.stringify(enrichedMedicines, null, 2));
-      if (appointment_id) {
-        await db.execute(
-          `UPDATE appointments
+    if (appointment_id) {
+      await db.execute(
+        `UPDATE appointments
           SET purpose = ?
           WHERE id = ?`,
-          [chiefComplaint || null, appointment_id]
-        );
-      }
+        [chiefComplaint || null, appointment_id]
+      );
+    }
     const [result] = await db.execute(
       `INSERT INTO prescriptions
          (admin_id, patient_id, doctor_id, appointment_id,
@@ -1100,7 +1555,7 @@ router.get("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
           appointment_date: rx.appointment_date || null,
           status: rx.appointment_status || null,
           purpose: rx.purpose || "",
-      },
+        },
         branch: rx.branch || rx.doctor_branch || "—",
         patient: { id: rx.patient_id, name: rx.patient_name || "—" },
         doctor: rx.doctor_id
@@ -1205,9 +1660,9 @@ router.get(
             // 👨‍⚕️ Doctor
             requester: rx.doctor_id
               ? {
-                  reference: `Practitioner/${rx.doctor_id}`,
-                  display: rx.doctor_name
-                }
+                reference: `Practitioner/${rx.doctor_id}`,
+                display: rx.doctor_name
+              }
               : undefined,
 
             authoredOn: rx.created_at,
@@ -1215,9 +1670,9 @@ router.get(
             // 🔗 Encounter
             encounter: rx.appointment_id
               ? {
-                  reference: `Encounter/${rx.appointment_id}`,
-                  display: `Visit on ${rx.appointment_date}`
-                }
+                reference: `Encounter/${rx.appointment_id}`,
+                display: `Visit on ${rx.appointment_date}`
+              }
               : undefined,
 
             // 🧠 Diagnosis
@@ -1329,11 +1784,11 @@ router.put("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
     const { id } = req.params;
 
     const {
-  medicines = [],
-  tests = [],
-  consultation_types = [],
-  appointment_id,
-  notes = {},
+      medicines = [],
+      tests = [],
+      consultation_types = [],
+      appointment_id,
+      notes = {},
     } = req.body;
 
     const {
@@ -1349,23 +1804,23 @@ router.put("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
     console.log("[UPDATE] Enriched medicines:", JSON.stringify(enrichedMedicines, null, 2));
 
     if (appointment_id) {
-    await db.execute(
+      await db.execute(
         `
         UPDATE appointments
         SET purpose = ?
         WHERE id = ? AND admin_id = ?
         `,
         [
-            chiefComplaint || null,
-            appointment_id,
-            adminId
+          chiefComplaint || null,
+          appointment_id,
+          adminId
         ]
-    );
+      );
     }
 
 
-   const [result] = await db.execute(
-`
+    const [result] = await db.execute(
+      `
 UPDATE prescriptions
 SET
 appointment_id=?,
@@ -1378,19 +1833,19 @@ diagnosis=?,
 updated_at=NOW()
 WHERE id=? AND admin_id=?
 `,
-[
-appointment_id ?? null,
-JSON.stringify(consultation_types),
-JSON.stringify(enrichedMedicines),
-JSON.stringify(tests),
+      [
+        appointment_id ?? null,
+        JSON.stringify(consultation_types),
+        JSON.stringify(enrichedMedicines),
+        JSON.stringify(tests),
 
-doctorNotes || null,
-treatmentPlan || null,
-diagnosis || null,
-id,
-adminId
-]
-);
+        doctorNotes || null,
+        treatmentPlan || null,
+        diagnosis || null,
+        id,
+        adminId
+      ]
+    );
     if (!result.affectedRows)
       return res.status(404).json({ success: false, message: "Prescription not found" });
 
@@ -1429,5 +1884,7 @@ router.delete("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req,
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
+
 
 module.exports = router;
