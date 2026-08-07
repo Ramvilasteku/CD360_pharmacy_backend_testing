@@ -76,7 +76,7 @@ const ipdAnalyticsRoutes = require("./routes/ipd/ipdAnalyticsRoutes.js");
 // ---------- MIDDLEWARE ----------
 app.use(
   cors({
-    origin: "http://localhost:3000", // React URL
+    origin: "https://caredesk360.com", // React URL
     credentials: true, // allow cookies / auth headers
   })
 );
