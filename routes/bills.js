@@ -502,7 +502,7 @@ router.get(
            b.client_id,
            b.staff_id,
            b.subtotal,
-           b.tax,
+           b.tax_amount,
            b.total_amount,
            b.bill_status,
            b.notes,

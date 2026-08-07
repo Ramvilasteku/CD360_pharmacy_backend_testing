@@ -929,7 +929,7 @@ router.post(
    📋 LIST PRESCRIPTIONS
 ═══════════════════════════════════════════════════════════════════ */
 
-router.get("/", authMiddleware, allowRoles("admin", "doctor"), async (req, res) => {
+router.get("/", authMiddleware, allowRoles("admin", "doctor", "receptionist"), async (req, res) => {
   try {
     const adminId = getAdminId(req.user);
 
@@ -1510,7 +1510,7 @@ router.get(
    🔍 GET SINGLE PRESCRIPTION
 ═══════════════════════════════════════════════════════════════════ */
 
-router.get("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, res) => {
+router.get("/:id", authMiddleware, allowRoles("admin", "doctor", "receptionist"), async (req, res) => {
   try {
     const [[rx]] = await db.execute(
       `SELECT

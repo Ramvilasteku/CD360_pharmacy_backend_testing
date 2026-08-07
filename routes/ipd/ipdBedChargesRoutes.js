@@ -8,14 +8,14 @@ const { regenerateBill } = require("./ipdBillsRoutes");
 
 async function generateBedCharges(ipd_id, adminId = null) {
   const conn = await db.getConnection();
-
+ 
   try {
     await conn.beginTransaction();
-
+ 
     /* =====================================================
          GET IPD
       ===================================================== */
-
+ 
     const [[ipd]] = await conn.query(
       `SELECT
             id,
@@ -29,12 +29,12 @@ async function generateBedCharges(ipd_id, adminId = null) {
          FOR UPDATE`,
       [ipd_id],
     );
-
+ 
     if (!ipd) {
       await conn.rollback();
       return 0;
     }
-
+ 
     /* =====================================================
          STATUS CHECK
       ===================================================== */
@@ -42,109 +42,109 @@ async function generateBedCharges(ipd_id, adminId = null) {
       await conn.rollback();
       return 0;
     }
-
+ 
     // dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-
+ 
     const [allocations] = await conn.query(
       `SELECT
             a.id AS allocation_id,
             a.bed_id,
             a.start_time,
-
+ 
             COALESCE(
               a.end_time,
               ?
             ) AS end_time,
-
+ 
             a.allocation_status,
-
+ 
             b.bed_number,
             b.bed_charge,
             b.branch_name AS bed_branch
-
+ 
          FROM ipd_bed_allocations a
-
+ 
          INNER JOIN ipd_beds b
            ON b.id = a.bed_id
-
+ 
          WHERE a.ipd_id = ?
            AND a.admin_id = ?
-
+ 
          ORDER BY a.start_time ASC`,
       [ipd.discharge_date || new Date(), ipd_id, adminId],
     );
-
+ 
     if (!allocations.length) {
       await conn.rollback();
       return 0;
     }
-
+ 
     let insertedCount = 0;
-
+ 
     const today = new Date();
-
+ 
     today.setHours(0, 0, 0, 0);
-
+ 
     /* =====================================================
          PROCESS EACH ALLOCATION
       ===================================================== */
-
+ 
     for (const data of allocations) {
       /* -------------------------------------------------
            START / END
         ------------------------------------------------- */
-
+ 
       const start = new Date(data.start_time);
-
+ 
       const end = new Date(data.end_time);
-
+ 
       if (start >= end) {
         continue;
       }
-
+ 
       /* =================================================
            DATE ITERATION
         ================================================= */
-
+ 
       let currentDay = new Date(start);
-
+ 
       currentDay.setHours(0, 0, 0, 0);
-
+ 
       const lastDay = new Date(end);
-
+ 
       lastDay.setHours(0, 0, 0, 0);
-
+ 
       while (currentDay <= lastDay) {
         /* ---------------------------------------------
              SKIP FUTURE DAYS
           --------------------------------------------- */
-
+ 
         if (currentDay > today) {
           currentDay.setDate(currentDay.getDate() + 1);
-
+ 
           continue;
         }
-
+ 
         /* ---------------------------------------------
              CHARGE DATE
           --------------------------------------------- */
-
+ 
         const charge_date = currentDay.toLocaleDateString("en-CA");
-
+ 
         /* ---------------------------------------------
              DAY TYPE
           --------------------------------------------- */
-
+ 
         const isFirstDay = currentDay.toDateString() === start.toDateString();
-
+ 
         const isLastDay = currentDay.toDateString() === end.toDateString();
-
+ 
         let hours = 0;
-
+ 
         /* =============================================
              SAME DAY
           ============================================= */
-
+ 
         if (isFirstDay && isLastDay) {
           hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
         } else if (isFirstDay) {
@@ -152,20 +152,20 @@ async function generateBedCharges(ipd_id, adminId = null) {
              FIRST DAY
           ============================================= */
           const nextDay = new Date(currentDay);
-
+ 
           nextDay.setDate(nextDay.getDate() + 1);
-
+ 
           nextDay.setHours(0, 0, 0, 0);
-
+ 
           hours = (nextDay.getTime() - start.getTime()) / (1000 * 60 * 60);
         } else if (isLastDay) {
           /* =============================================
              LAST DAY
           ============================================= */
           const startOfDay = new Date(currentDay);
-
+ 
           startOfDay.setHours(0, 0, 0, 0);
-
+ 
           hours = (end.getTime() - startOfDay.getTime()) / (1000 * 60 * 60);
         } else {
           /* =============================================
@@ -174,113 +174,122 @@ async function generateBedCharges(ipd_id, adminId = null) {
           /* 🔥 FORCE EXACT 24 */
           hours = 24;
         }
-
+ 
         hours = Math.round(hours * 100) / 100;
-
+ 
         if (hours <= 0) {
           currentDay.setDate(currentDay.getDate() + 1);
-
+ 
           continue;
         }
-
+ 
         /* ---------------------------------------------
              CHARGE LOGIC
           --------------------------------------------- */
-
+ 
         let charge_type;
         let charge_amount;
-
+ 
         if (hours < 1) {
           charge_type = "hourly";
-
+ 
           charge_amount = (Number(data.bed_charge) / 24) * hours;
         } else if (hours <= 12) {
           charge_type = "half_day";
-
+ 
           charge_amount = Number(data.bed_charge) / 2;
         } else {
           charge_type = "full_day";
-
+ 
           charge_amount = Number(data.bed_charge);
         }
-
+ 
         charge_amount = Math.round(charge_amount * 100) / 100;
-
+ 
         /* ---------------------------------------------
              DUPLICATE CHECK
           --------------------------------------------- */
-
-        const [[exists]] = await conn.query(
-          `SELECT id
-               FROM ipd_bed_charges
-               WHERE ipd_id = ?
-                 AND bed_allocation_id = ?
-                 AND charge_date = ?`,
-          [ipd_id, data.allocation_id, charge_date],
-        );
-
+ 
         /* ---------------------------------------------
-             INSERT
-          --------------------------------------------- */
-
-        if (!exists) {
-          try {
+     UPSERT (insert new, or correct existing
+     row if hours/charge changed)
+  --------------------------------------------- */
+ 
+          const [[existing]] = await conn.query(
+            `SELECT id, hours_used, charge_type, charge_amount
+              FROM ipd_bed_charges
+              WHERE ipd_id = ?
+                AND bed_allocation_id = ?
+                AND charge_date = ?`,
+            [ipd_id, data.allocation_id, charge_date],
+          );
+ 
+          if (!existing) {
+            // First time we've seen this charge_date — insert it
             await conn.query(
               `INSERT INTO ipd_bed_charges
-                (
-                  admin_id,
-                  ipd_id,
-                  bed_allocation_id,
-                  bed_id,
-                  charge_date,
-                  hours_used,
-                  charge_type,
-                  rate_per_day,
-                  charge_amount
-                )
-                VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [
-                adminId,
-                ipd_id,
-                data.allocation_id,
-                data.bed_id,
-                charge_date,
-                hours,
-                charge_type,
-                data.bed_charge,
-                charge_amount,
-              ],
+                (admin_id, ipd_id, bed_allocation_id, bed_id, charge_date,
+                hours_used, charge_type, rate_per_day, charge_amount)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [adminId, ipd_id, data.allocation_id, data.bed_id, charge_date,
+              hours, charge_type, data.bed_charge, charge_amount],
             );
-
             insertedCount++;
-
-            // ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-          } catch (err) {
-            if (err.code !== "ER_DUP_ENTRY") {
-              throw err;
-            }
+          } else if (
+            Number(existing.hours_used) !== hours ||
+            existing.charge_type !== charge_type ||
+            Number(existing.charge_amount) !== charge_amount
+          ) {
+            // Day isn't final yet (e.g. "today") — correct the row
+            // as more hours accumulate
+            await conn.query(
+              `UPDATE ipd_bed_charges
+                SET hours_used = ?, charge_type = ?, charge_amount = ?
+                WHERE id = ?`,
+              [hours, charge_type, charge_amount, existing.id],
+            );
+            insertedCount++; // so regenerateBill still fires
           }
-        }
-
+ 
         /* ---------------------------------------------
              NEXT DAY
           --------------------------------------------- */
-
+ 
         currentDay.setDate(currentDay.getDate() + 1);
       }
     }
-
+ 
+    if (!ipd) {
+        console.log(`[DEBUG] IPD ${ipd_id}: not found`);
+        await conn.rollback();
+        return 0;
+      }
+ 
+      if (ipd.status !== "admitted" && ipd.status !== "discharged") {
+        console.log(`[DEBUG] IPD ${ipd_id}: bad status = ${ipd.status}`);
+        await conn.rollback();
+        return 0;
+      }
+ 
+      // ... after allocations query ...
+ 
+      console.log(`[DEBUG] IPD ${ipd_id}: found ${allocations.length} allocations for admin_id=${adminId}`);
+ 
+      if (!allocations.length) {
+        await conn.rollback();
+        return 0;
+      }
+     
     /* =====================================================
          COMMIT
       ===================================================== */
-
+ 
     await conn.commit();
-
+ 
     if (insertedCount > 0) {
       await regenerateBill(ipd_id);
     }
-
+ 
     return insertedCount;
   } catch (err) {
     await conn.rollback();
