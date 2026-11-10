@@ -15,7 +15,27 @@ const { allowPermissions } = require("../../middlewares/allowPermissions");
 // holds what actually left the batch, which is how Ram's procurement code reads it.
 const { stripsOf, tabletsOf, batchesToStripView } = require("../../utils/pharmacyStripView");
 const { unitsPerPack, readSaleLine } = require("../../utils/pharmacyUnits");
-const { recordMove } = require("../../utils/pharmacyStock");
+const { recordMove, istToday } = require("../../utils/pharmacyStock");
+
+/** A 4xx the catch block passes straight to the screen (it reads err.status / err.extra). */
+const saleFail = (status, message, extra) => Object.assign(new Error(message), { status, extra });
+
+/**
+ * M8 (10 Nov 2026) — next bill number for this pharmacy: SALE-YYYYMMDD-0001 (IST day).
+ * Highest number used today + 1, read with FOR UPDATE so it sees every committed bill.
+ * Call it inside a transaction that has already locked the pharmacy's admins row,
+ * so two counters can never be handed the same number.
+ */
+async function nextSaleNumber(conn, tenantAdminId, prefix = "SALE", day = istToday().replace(/-/g, "")) {
+  const [[row]] = await conn.query(
+    `SELECT MAX(CAST(SUBSTRING_INDEX(sale_number, '-', -1) AS UNSIGNED)) AS n
+       FROM pharmacy_sales
+      WHERE admin_id = ? AND sale_number LIKE ?
+      FOR UPDATE`,
+    [tenantAdminId, `${prefix}-${day}-%`]
+  );
+  return `${prefix}-${day}-${String((Number(row.n) || 0) + 1).padStart(4, "0")}`;
+}
 const { resolveScope, batchFilter, rowFilter, historyBranchSql, recordScope, branchKey, sendBranchError } = require("../../utils/pharmacyBranch");
 
 /* ============================================================
@@ -81,6 +101,9 @@ function isValidMobile(m) {
 }
 
 const VALID_PAYMENT_METHODS = ["cash", "card", "upi", "bank_transfer", "credit", "mixed"];
+// pharmacy_payments.payment_method has no 'credit' / 'mixed' — those are recorded as 'other'
+// (writing them as-is made the whole sale fail with a database error).
+const paymentRowMethod = (m) => (["cash", "card", "upi", "bank_transfer"].includes(m) ? m : "other");
 const VALID_PAYMENT_STATUSES = ["unpaid", "partial", "paid"];
 const VALID_SALE_STATUSES = ["completed", "cancelled", "returned"];
 const VALID_GENDERS = ["male", "female", "other"];
@@ -220,25 +243,9 @@ async function resolveCustomer(body, tenantAdminId, connection) {
   };
 }
 
+// Not called anywhere today; kept as a thin wrapper so nothing that imports it breaks.
 async function generateSaleNumber(tenantAdminId, conn = db) {
-  const today = new Date();
-  const yyyy = today.getFullYear();
-  const mm = String(today.getMonth() + 1).padStart(2, "0");
-  const dd = String(today.getDate()).padStart(2, "0");
-  const prefix = `SALE-${yyyy}${mm}${dd}-`;
-
-  const [rows] = await conn.query(
-    `SELECT sale_number FROM pharmacy_sales 
-     WHERE admin_id = ? AND sale_number LIKE ? 
-     ORDER BY id DESC LIMIT 1`,
-    [tenantAdminId, `${prefix}%`]
-  );
-
-  let nextNum = 1;
-  if (rows.length) {
-    nextNum = parseInt(rows[0].sale_number.split("-").pop(), 10) + 1;
-  }
-  return `${prefix}${String(nextNum).padStart(4, "0")}`;
+  return nextSaleNumber(conn, tenantAdminId, "SALE");
 }
 
 /* ============================================================
@@ -572,32 +579,25 @@ router.post(
     const saleBf = batchFilter(scope, "b");
  
     // ═══════════════════════════════════════════════════════════
-    // Totals — trust the client only if present, otherwise compute
+    // N3 (10 Nov 2026): totals are computed on the server from the lines, once every
+    // batch has been checked (below). The client's numbers are only used to CHECK
+    // that the screen and the server agree — they are never stored as they come.
     // ═══════════════════════════════════════════════════════════
-    let itemsSubtotal = 0, itemsTaxFromLines = 0;
-    for (const item of items) {
-      const net = (item.unit_price * item.quantity) - (item.discount_amount || 0);
-      itemsSubtotal += net;
-      itemsTaxFromLines += (net * (item.gst_percentage || 0)) / 100;
+    const orderDiscountIn = Math.max(0, Number(discountFromBody) || 0);
+    const overallGstIn = Number(
+      req.body.overall_gst_percent !== undefined ? req.body.overall_gst_percent : req.body.extra_gst_percent
+    ) || 0;
+    if (overallGstIn < 0 || overallGstIn > 100) {
+      return res.status(400).json({ success: false, message: "Overall GST must be between 0 and 100%." });
     }
- 
-    const discountAmount = Math.max(0, Number(discountFromBody) || 0);
-    const afterDiscount  = Math.max(0, itemsSubtotal - discountAmount);
- 
-    // If frontend sent tax_amount (overall GST override), use it; else per-line sum
-    const taxAmount =
-      taxFromBody !== undefined && taxFromBody !== null && taxFromBody !== ""
-        ? Math.max(0, Number(taxFromBody))
-        : itemsTaxFromLines;
- 
-    const grandTotal =
-      grandTotalFromBody !== undefined && grandTotalFromBody !== null && grandTotalFromBody !== ""
-        ? Math.round(Number(grandTotalFromBody) * 100) / 100
-        : Math.round((afterDiscount + taxAmount) * 100) / 100;
- 
+    void taxFromBody; // kept in the payload for older screens; the server works GST out itself
+
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
+      // M8: one sale at a time per pharmacy while the bill number is taken. This must be
+      // the first statement of the transaction (same pattern as B2B invoices).
+      await connection.query(`SELECT id FROM admins WHERE id = ? FOR UPDATE`, [tenantAdminId]);
  
       // ═══════════════════════════════════════════════════════════
       // Find customer — NEVER create one
@@ -667,23 +667,108 @@ router.post(
       }
  
       // ═══════════════════════════════════════════════════════════
-      // Sale number — DRAFT prefix for drafts (unchanged)
+      // Check every line against its batch BEFORE anything is written
+      //   N2 — the batch must be active and in date, the medicine active
+      //   N4 — the line's medicine must be the batch's medicine
+      //   N3 — the rate may not exceed the batch MRP; a line discount not the line
       // ═══════════════════════════════════════════════════════════
-      const today  = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      const todayIst = istToday();
+      const lines = [];
+      for (const item of items) {
+        const qty          = Number(item.quantity) || 0;
+        const unitPrice    = Math.round((Number(item.unit_price) || 0) * 100) / 100;
+        const lineDiscount = Math.round((Number(item.discount_amount) || 0) * 100) / 100;
+        const gstPct       = Number(item.gst_percentage) || 0;
+
+        const [batchRows] = await connection.query(
+          `SELECT b.id, b.medicine_id, b.batch_number, b.units_per_pack, b.mrp,
+                  b.quantity_available, b.branch, b.status, b.expiry_date,
+                  pm.status AS medicine_status, md.medicine_name
+             FROM pharmacy_medicine_batches b
+             JOIN pharmacy_medicines pm ON pm.id = b.medicine_id AND pm.admin_id = b.admin_id
+        LEFT JOIN medicine_data md      ON md.id = pm.medicine_data_id
+            WHERE b.id = ? AND b.admin_id = ? ${saleBf.sql}
+            LIMIT 1`,
+          [item.batch_id, tenantAdminId, ...saleBf.params]
+        );
+        if (!batchRows.length) {
+          throw saleFail(404, "One of the items is not stocked in this branch. Refresh the cart and try again.");
+        }
+        const batch = batchRows[0];
+        const label = `${batch.medicine_name || "Medicine"} (batch ${batch.batch_number})`;
+
+        if (Number(item.medicine_id) !== Number(batch.medicine_id)) {
+          throw saleFail(400, `Batch ${batch.batch_number} belongs to a different medicine than the one on this line. Remove the line and add it again.`);
+        }
+        if (batch.medicine_status !== "active") {
+          throw saleFail(409, `${batch.medicine_name || "This medicine"} has been deactivated and can't be sold. Remove it from the bill.`, { batch_number: batch.batch_number });
+        }
+        if (batch.status !== "active") {
+          throw saleFail(409, `${label} is ${batch.status || "not active"} and can't be sold. Remove it from the bill.`, { batch_number: batch.batch_number });
+        }
+        const exp = batch.expiry_date ? String(batch.expiry_date).slice(0, 10) : null;
+        if (exp && exp < todayIst) {
+          throw saleFail(409, `${label} expired on ${exp} and can't be sold. Remove it from the bill.`, { batch_number: batch.batch_number });
+        }
+        const mrp = Number(batch.mrp) || 0;
+        if (mrp > 0 && unitPrice > mrp + 0.005) {
+          throw saleFail(400, `${label}: the rate ₹${unitPrice} is above the MRP ₹${mrp}.`, { batch_number: batch.batch_number });
+        }
+        const lineGross = Math.round(unitPrice * qty * 100) / 100;
+        if (lineDiscount > lineGross + 0.005) {
+          throw saleFail(400, `${label}: the discount ₹${lineDiscount} is more than the line (₹${lineGross}).`);
+        }
+
+        const upp       = unitsPerPack(batch);
+        const lineNet   = Math.max(0, lineGross - lineDiscount);
+        const lineTaxRaw = (lineNet * gstPct) / 100;
+        const lineTax   = Math.round(lineTaxRaw * 100) / 100;
+        lines.push({
+          batch, qty, unitPrice, lineDiscount, gstPct, lineNet, lineTaxRaw, lineTax,
+          lineTotal: Math.round((lineNet + lineTax) * 100) / 100,
+          upp,
+          // units_per_pack 1 means the item is only ever sold whole, which the schema calls a pack.
+          saleUnit: upp > 1 ? "strip" : "pack",
+          tabletsOut: tabletsOf(qty, upp),
+        });
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // Totals — the same formula the POS and Existing-patient screens use:
+      //   lines net − order discount, then GST: either a % on the whole bill
+      //   (overall_gst_percent) or the sum of each line's own GST.
+      // ═══════════════════════════════════════════════════════════
+      const r2 = (n) => Math.round(n * 100) / 100;
+      const itemsSubtotal  = r2(lines.reduce((t, l) => t + l.lineNet, 0));
+      const discountAmount = r2(Math.min(orderDiscountIn, itemsSubtotal));
+      const afterDiscount  = r2(itemsSubtotal - discountAmount);
+      const taxAmount = overallGstIn > 0
+        ? r2((afterDiscount * overallGstIn) / 100)
+        : r2(lines.reduce((t, l) => t + l.lineTaxRaw, 0));
+      const grandTotal = r2(afterDiscount + taxAmount);
+
+      if (grandTotalFromBody !== undefined && grandTotalFromBody !== null && grandTotalFromBody !== "") {
+        const screenTotal = Number(grandTotalFromBody);
+        const tolerance = Math.max(0.05, 0.01 * lines.length);
+        if (!Number.isFinite(screenTotal) || Math.abs(screenTotal - grandTotal) > tolerance) {
+          throw saleFail(400,
+            `The bill total doesn't add up: the screen says ₹${Number.isFinite(screenTotal) ? screenTotal.toFixed(2) : "?"}, ` +
+            `the items come to ₹${grandTotal.toFixed(2)}. Refresh the bill and try again.`,
+            { server_grand_total: grandTotal });
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // Sale number — M8: IST date, highest number so far + 1, read with a lock
+      // (the admins row lock above makes the read-and-insert one step per pharmacy)
+      // ═══════════════════════════════════════════════════════════
+      const today  = todayIst.replace(/-/g, "");
       const prefix = status === "draft" ? "DRAFT" : "SALE";
-      const [lastRow] = await connection.query(
-        `SELECT sale_number FROM pharmacy_sales
-         WHERE admin_id = ? AND sale_number LIKE ?
-         ORDER BY id DESC LIMIT 1`,
-        [tenantAdminId, `${prefix}-${today}-%`]
-      );
-      const nextNum = lastRow.length
-        ? parseInt(lastRow[0].sale_number.split("-").pop()) + 1
-        : 1;
-      const saleNumber = `${prefix}-${today}-${nextNum.toString().padStart(4, "0")}`;
- 
+      const saleNumber = await nextSaleNumber(connection, tenantAdminId, prefix, today);
+
       // Payment fields — draft gets zeros (unchanged)
-      const paidForDb     = status === "draft" ? 0 : (Number(paid_amount) || 0);
+      // Change handed back is not "paid": the payment recorded is at most the bill.
+      const paidForDb     = status === "draft" ? 0 : r2(Math.min(Math.max(0, Number(paid_amount) || 0), grandTotal));
       const dueForDb      = status === "draft" ? 0 : Math.max(0, grandTotal - paidForDb);
       const paymentMethod = status === "draft" ? "cash" : (payment_method || "cash");
       const paymentStatus = status === "draft"
@@ -721,74 +806,39 @@ router.post(
         ]
       );
       const saleId = saleResult.insertId;
- 
-      for (const item of items) {
-  //  Per-line math — server-side so client can't send wrong totals
-  const qty          = Number(item.quantity) || 0;
-  const unitPrice    = Number(item.unit_price) || 0;
-  const lineDiscount = Number(item.discount_amount) || 0;
-  const gstPct       = Number(item.gst_percentage) || 0;
 
-  const lineNet   = Math.max(0, (unitPrice * qty) - lineDiscount);
-  const lineTax   = Math.round((lineNet * gstPct / 100) * 100) / 100;
-  const lineTotal = Math.round((lineNet + lineTax) * 100) / 100;
+      for (const line of lines) {
+        await connection.query(
+          `INSERT INTO pharmacy_sale_items
+            (sale_id, medicine_id, batch_id,
+             quantity, sale_unit, units_per_pack, tablets,
+             unit_price, discount_amount,
+             gst_percentage, tax_amount, total_amount)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            saleId, line.batch.medicine_id, line.batch.id,   // N4: the batch's own medicine
+            line.qty, line.saleUnit, line.upp, line.tabletsOut,
+            line.unitPrice, line.lineDiscount,
+            line.gstPct, line.lineTax, line.lineTotal,
+          ]
+        );
 
-  // The screen counts in strips; the batch is counted in tablets. Read the batch's own
-  // packing (and check it belongs to this tenant and branch while we are here) so the
-  // line records what was actually sold and the right number of tablets leaves stock.
-  const [batchRows] = await connection.query(
-    `SELECT b.id, b.medicine_id, b.batch_number, b.units_per_pack,
-            b.quantity_available, b.branch, b.status, b.expiry_date
-       FROM pharmacy_medicine_batches b
-      WHERE b.id = ? AND b.admin_id = ? ${saleBf.sql}
-      LIMIT 1`,
-    [item.batch_id, tenantAdminId, ...saleBf.params]
-  );
-  if (!batchRows.length) {
-    await connection.rollback();
-    return res.status(404).json({
-      success: false,
-      message: "One of the items is not stocked in this branch. Refresh the cart and try again.",
-    });
-  }
-  const batch = batchRows[0];
-  const upp = unitsPerPack(batch);
-  // units_per_pack 1 means the item is only ever sold whole, which the schema calls a pack.
-  const saleUnit = upp > 1 ? "strip" : "pack";
-  const tabletsOut = tabletsOf(qty, upp);
+        if (status === "completed") {
+          // recordMove locks the batch, takes the tablets out, throws a 409 naming the batch
+          // when there aren't enough, and writes the pharmacy_stock_transactions row.
+          await recordMove(connection, {
+            adminId: tenantAdminId,
+            userId: cashierId,
+            batchId: line.batch.id,
+            tabletsOut: line.tabletsOut,
+            type: "sale",
+            referenceId: saleId,
+            referenceNumber: saleNumber,
+            notes: `Sold ${line.qty} ${line.saleUnit}${line.qty === 1 ? "" : "s"} on ${saleNumber}`,
+          });
+        }
+      }
 
-  await connection.query(
-    `INSERT INTO pharmacy_sale_items
-      (sale_id, medicine_id, batch_id,
-       quantity, sale_unit, units_per_pack, tablets,
-       unit_price, discount_amount,
-       gst_percentage, tax_amount, total_amount)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      saleId, item.medicine_id, item.batch_id,
-      qty, saleUnit, upp, tabletsOut,
-      unitPrice, lineDiscount,
-      gstPct, lineTax, lineTotal,
-    ]
-  );
-
-  if (status === "completed") {
-    // recordMove locks the batch, takes the tablets out, throws a 409 naming the batch
-    // when there aren't enough, and writes the pharmacy_stock_transactions row that
-    // this module never used to write.
-    await recordMove(connection, {
-      adminId: tenantAdminId,
-      userId: cashierId,
-      batchId: batch.id,
-      tabletsOut,
-      type: "sale",
-      referenceId: saleId,
-      referenceNumber: saleNumber,
-      notes: `Sold ${qty} ${saleUnit}${qty === 1 ? "" : "s"} on ${saleNumber}`,
-    });
-  }
-}
- 
       // ═══════════════════════════════════════════════════════════
       // ⭐ NEW — also insert into pharmacy_payments when paid at sale
       // Only when sale is completed and some money came in. The
@@ -798,14 +848,15 @@ router.post(
       let paymentNumber = null;
       let paymentId = null;
       if (status === "completed" && paidForDb > 0) {
-        const [[payCountRow]] = await connection.query(
-          `SELECT COUNT(*) + 1 AS seq
+        // M8: same day (IST) as the bill number, highest so far + 1, under the same lock
+        const [[payRow]] = await connection.query(
+          `SELECT MAX(CAST(SUBSTRING_INDEX(payment_number, '-', -1) AS UNSIGNED)) AS n
              FROM pharmacy_payments
-            WHERE admin_id = ?
-              AND DATE(payment_date) = CURDATE()`,
-          [tenantAdminId]
+            WHERE admin_id = ? AND payment_number LIKE ?
+            FOR UPDATE`,
+          [tenantAdminId, `PAY-${today}-%`]
         );
-        paymentNumber = `PAY-${today}-${String(payCountRow.seq).padStart(5, "0")}`;
+        paymentNumber = `PAY-${today}-${String((Number(payRow.n) || 0) + 1).padStart(5, "0")}`;
  
         const [payIns] = await connection.query(
           `INSERT INTO pharmacy_payments
@@ -817,7 +868,7 @@ router.post(
             saleId,
             paymentNumber,
             paidForDb,
-            paymentMethod,
+            paymentRowMethod(paymentMethod),
             transaction_reference || null,
             notes?.trim() || null,
             cashierId,
@@ -1063,7 +1114,8 @@ router.get(
 // draft routes 
 
 //  this is get drafts route
-router.get("/drafts", authMiddleware, allowPermissions("pharmacy.sales.view"),
+// M7: billing screens need this read — a cashier with only pharmacy.sales.create must be able to use it
+router.get("/drafts", authMiddleware, allowPermissions("pharmacy.sales.view", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const tenantAdminId = getTenantAdminId(req);
@@ -1115,7 +1167,8 @@ router.get("/drafts", authMiddleware, allowPermissions("pharmacy.sales.view"),
   }
 );
 
-router.get("/drafts/:id", authMiddleware, allowPermissions("pharmacy.sales.view"),
+// M7: billing screens need this read — a cashier with only pharmacy.sales.create must be able to use it
+router.get("/drafts/:id", authMiddleware, allowPermissions("pharmacy.sales.view", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const tenantAdminId = getTenantAdminId(req);
@@ -1180,11 +1233,16 @@ router.patch("/drafts/:id/complete", authMiddleware,
   allowPermissions("pharmacy.sales.create"),
   async (req, res) => {
     const tenantAdminId = getTenantAdminId(req);
-    const { payment_method = "cash", paid_amount = 0 } = req.body;
+    const { payment_method = "cash", paid_amount = 0, transaction_reference = null } = req.body || {};
+    if (!VALID_PAYMENT_METHODS.includes(payment_method)) {
+      return res.status(400).json({ success: false, message: "Unknown payment method." });
+    }
 
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
+      // M8: numbering is serialised per pharmacy — first statement of the transaction.
+      await connection.query(`SELECT id FROM admins WHERE id = ? FOR UPDATE`, [tenantAdminId]);
 
       // Verify the draft exists
       const [sales] = await connection.query(
@@ -1221,14 +1279,40 @@ router.patch("/drafts/:id/complete", authMiddleware,
       const [items] = await connection.query(
         `SELECT si.medicine_id, si.batch_id, si.quantity, si.sale_unit,
                 si.units_per_pack, si.tablets,
-                b.units_per_pack AS batch_upp, b.batch_number, b.branch AS batch_branch
+                b.units_per_pack AS batch_upp, b.batch_number, b.branch AS batch_branch,
+                b.status AS batch_status, b.expiry_date, pm.status AS medicine_status,
+                md.medicine_name
            FROM pharmacy_sale_items si
            LEFT JOIN pharmacy_medicine_batches b ON b.id = si.batch_id
+           LEFT JOIN pharmacy_medicines pm       ON pm.id = b.medicine_id
+           LEFT JOIN medicine_data md            ON md.id = pm.medicine_data_id
           WHERE si.sale_id = ?`,
         [req.params.id]
       );
 
+      // The real bill number (M8: IST day, locked). Taken before stock moves so the
+      // stock ledger rows carry the SALE number, not the old DRAFT one.
+      const today = istToday().replace(/-/g, "");
+      const saleNumber = await nextSaleNumber(connection, tenantAdminId, "SALE", today);
+      const todayIst = istToday();
+
       for (const item of items) {
+        // N2: a batch may have expired or been blocked, or the medicine switched off,
+        // while the bill sat parked.
+        const what = `${item.medicine_name || "Medicine"} (batch ${item.batch_number || item.batch_id})`;
+        const exp = item.expiry_date ? String(item.expiry_date).slice(0, 10) : null;
+        const stop =
+          item.medicine_status && item.medicine_status !== "active" ? `${item.medicine_name || "A medicine"} on this bill has been deactivated.` :
+          item.batch_status && item.batch_status !== "active" ? `${what} is ${item.batch_status}.` :
+          exp && exp < todayIst ? `${what} expired on ${exp}.` : null;
+        if (stop) {
+          await connection.rollback();
+          return res.status(409).json({
+            success: false,
+            message: `${stop} Remove it from the bill and park it again.`,
+            batch_number: item.batch_number || undefined,
+          });
+        }
         // Every batch on the draft must still sit in the draft's branch. A batch can move
         // (a purchase transfer) between parking and completing; taking it anyway would
         // charge one branch's stock to another branch's bill.
@@ -1249,8 +1333,8 @@ router.patch("/drafts/:id/complete", authMiddleware,
             tabletsOut: line.tablets,
             type: "sale",
             referenceId: Number(req.params.id),
-            referenceNumber: sales[0].sale_number,
-            notes: `Parked sale completed (${item.quantity} ${line.sale_unit})`,
+            referenceNumber: saleNumber,
+            notes: `Parked sale ${sales[0].sale_number} completed (${item.quantity} ${line.sale_unit})`,
           });
         } catch (e) {
           await connection.rollback();
@@ -1268,21 +1352,10 @@ router.patch("/drafts/:id/complete", authMiddleware,
         }
       }
 
-      // Flip to 'completed' with real sale number
-      const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-      const [lastRow] = await connection.query(
-        `SELECT sale_number FROM pharmacy_sales
-         WHERE admin_id = ? AND sale_number LIKE ?
-         ORDER BY id DESC LIMIT 1`,
-        [tenantAdminId, `SALE-${today}-%`]
-      );
-      const nextNum = lastRow.length
-        ? parseInt(lastRow[0].sale_number.split("-").pop()) + 1
-        : 1;
-      const saleNumber = `SALE-${today}-${nextNum.toString().padStart(4, "0")}`;
 
-      const paidNum = Number(paid_amount);
-      const dueNum = Math.max(0, grandTotal - paidNum);
+      // Change handed back is not "paid": at most the bill.
+      const paidNum = Math.round(Math.min(Math.max(0, Number(paid_amount) || 0), grandTotal) * 100) / 100;
+      const dueNum = Math.max(0, Math.round((grandTotal - paidNum) * 100) / 100);
       const paymentStatus = paidNum >= grandTotal ? "paid"
                           : paidNum > 0 ? "partial" : "unpaid";
 
@@ -1302,11 +1375,41 @@ router.patch("/drafts/:id/complete", authMiddleware,
         [saleNumber, payment_method, paidNum, dueNum, paymentStatus, req.params.id]
       );
 
+      // A parked bill paid at the counter is money in, exactly like a direct sale — it
+      // never got a pharmacy_payments row, so payment reports missed it (10 Nov 2026).
+      let paymentNumber = null;
+      if (paidNum > 0) {
+        const [[payRow]] = await connection.query(
+          `SELECT MAX(CAST(SUBSTRING_INDEX(payment_number, '-', -1) AS UNSIGNED)) AS n
+             FROM pharmacy_payments
+            WHERE admin_id = ? AND payment_number LIKE ?
+            FOR UPDATE`,
+          [tenantAdminId, `PAY-${today}-%`]
+        );
+        paymentNumber = `PAY-${today}-${String((Number(payRow.n) || 0) + 1).padStart(5, "0")}`;
+        await connection.query(
+          `INSERT INTO pharmacy_payments
+             (admin_id, sale_id, purchase_id, payment_number, amount,
+              payment_method, transaction_reference, notes, received_by)
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+          [tenantAdminId, Number(req.params.id), paymentNumber, paidNum, paymentRowMethod(payment_method),
+           transaction_reference || null, `Parked bill ${sales[0].sale_number} completed`, req.user.id]
+        );
+      }
+
       await connection.commit();
       return res.json({
         success: true,
         message: "Sale completed",
-        data: { id: Number(req.params.id), sale_number: saleNumber },
+        data: {
+          id: Number(req.params.id),
+          sale_number: saleNumber,
+          grand_total: grandTotal,
+          paid_amount: paidNum,
+          due_amount: dueNum,
+          payment_status: paymentStatus,
+          payment_number: paymentNumber,
+        },
       });
     } catch (err) {
       await connection.rollback();
@@ -2855,9 +2958,11 @@ router.get(
     throw e;
   }
   const [items] = await db.query(
-    `SELECT si.*, m.medicine_name, b.batch_number
+    `SELECT si.*, md.medicine_name, md.strength, b.batch_number
        FROM pharmacy_sale_items si
        JOIN pharmacy_medicines m ON m.id = si.medicine_id
+       -- L1: the name lives in the shared catalogue, not on pharmacy_medicines
+       JOIN medicine_data md ON md.id = m.medicine_data_id
        JOIN pharmacy_medicine_batches b ON b.id = si.batch_id
       WHERE si.sale_id = ? AND b.admin_id = ?`,
     [sale.id, admin_id]

@@ -83,6 +83,10 @@ const buildCheck = (mode) => (...allowedPermissions) => {
       const [rows] = await db.query(
         `SELECT DISTINCT LOWER(p.permission_key) AS permission_key
            FROM user_role_assignments ura
+           -- M6: a role switched off on the Roles screen (roles.status = 0) grants nothing
+           INNER JOIN roles r
+                   ON r.id = ura.role_id
+                  AND r.status = 1
            INNER JOIN role_permissions rp
                    ON rp.role_id = ura.role_id
                   AND rp.admin_id = ?
@@ -130,4 +134,4 @@ const buildCheck = (mode) => (...allowedPermissions) => {
 exports.allowPermissions = buildCheck("any");
 exports.allowPermissions.all = buildCheck("all");
 // Expose cache-buster so your admin_modules update route can call it
-exports.bustModuleCache = (admin_id) => moduleCache.delete(admin_id); 
+exports.bustModuleCache = (admin_id) => moduleCache.delete(admin_id);

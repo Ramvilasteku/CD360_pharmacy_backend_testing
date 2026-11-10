@@ -1,4 +1,3 @@
-
 # See https://help.github.com/articles/ignoring-files/
 
 # dependencies
@@ -29,3 +28,7 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Uploaded client/staff files — never commit (SEC-1)
+/Images/companies/
+/temp/

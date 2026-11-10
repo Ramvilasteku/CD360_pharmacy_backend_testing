@@ -436,7 +436,8 @@ router.get(
 router.get(
   '/pharmacy/dispensing/drafts',
   authMiddleware,
-  allowPermissions('pharmacy.sales.view'),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions('pharmacy.sales.view', 'pharmacy.sales.create'),
   async (req, res) => {
     try {
       const admin_id = getAdminIdFromUser(req.user);
@@ -490,14 +491,16 @@ router.get(
 router.get(
   '/pharmacy/dispensing/drafts/:id',
   authMiddleware,
-  allowPermissions('pharmacy.sales.view'),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions('pharmacy.sales.view', 'pharmacy.sales.create'),
   async (req, res) => {
     try {
       const admin_id = getAdminIdFromUser(req.user);
       const [headerRows] = await db.query(
         `SELECT d.*, p.name AS patient_name, p.mobile AS patient_mobile,
                 p.email AS patient_email, p.gender AS patient_gender,
-                p.age AS patient_age
+                -- N1: clients has dob, not age
+                TIMESTAMPDIFF(YEAR, p.dob, CURDATE()) AS patient_age
            FROM pharmacy_dispensing d
       LEFT JOIN clients p ON p.id = d.patient_id
           WHERE d.id = ? AND d.admin_id = ? AND d.status = 'pending'
@@ -524,13 +527,15 @@ router.get(
                 di.unit_price, di.discount_amount,
                 di.gst_percentage, di.gst_amount, di.line_total,
                 di.status AS item_status, di.notes AS item_notes,
-                pm.medicine_name,
+                md.medicine_name, md.strength, md.dosage_form,
                 pmb.batch_number,
                 FLOOR(pmb.quantity_available / GREATEST(COALESCE(pmb.units_per_pack, 1), 1)) AS available,
                 pmb.selling_price,
                 pmb.expiry_date
            FROM pharmacy_dispensing_items di
       LEFT JOIN pharmacy_medicines pm ON pm.id = di.medicine_id
+      -- N1: medicine_name lives in the shared catalogue, not on pharmacy_medicines
+      LEFT JOIN medicine_data md ON md.id = pm.medicine_data_id
       LEFT JOIN pharmacy_medicine_batches pmb ON pmb.id = di.batch_id
           WHERE di.dispensing_id = ?`,
         [header.id]
@@ -669,13 +674,82 @@ router.put(
       const bSql = finScope.key ? " AND branch IS NOT NULL AND LOWER(TRIM(branch)) = ?" : "";
       const bPrm = finScope.key ? [finScope.key] : [];
 
+      // N8 (10 Nov 2026): a parked prescription that the screen has just billed through
+      // POST /sales/post. That sale already took the stock and recorded the payment, so
+      // here we only close the draft and point it at the sale — moving stock or writing
+      // a payment again would count the medicines twice.
+      const settledSaleId = Number(req.body && req.body.sale_id) || 0;
+      if (settledSaleId) {
+        const [[sale]] = await conn.query(
+          `SELECT id, sale_number, grand_total, paid_amount, due_amount, payment_status, payment_method, branch
+             FROM pharmacy_sales
+            WHERE id = ? AND admin_id = ? AND status = 'completed'`,
+          [settledSaleId, admin_id]
+        );
+        const sameBranch = !finScope.key ||
+          String(sale && sale.branch || "").trim().toLowerCase() === finScope.key;
+        if (!sale || !sameBranch) {
+          await conn.rollback();
+          return res.status(404).json({ success: false, message: 'Sale not found for this draft' });
+        }
+        const payStatus = ['unpaid', 'partial', 'paid'].includes(sale.payment_status) ? sale.payment_status : 'unpaid';
+        const payMethod = ['cash', 'card', 'upi', 'bank_transfer', 'other'].includes(sale.payment_method) ? sale.payment_method : null;
+        await conn.query(
+          `UPDATE pharmacy_dispensing
+              SET status = 'dispensed', dispensed_by = ?, dispensing_date = NOW(),
+                  grand_total = ?, paid_amount = ?, due_amount = ?,
+                  payment_status = ?, payment_method = ?,
+                  notes = CONCAT_WS(' · ', NULLIF(notes, ''), ?)
+            WHERE id = ? AND admin_id = ?`,
+          [received_by, sale.grand_total, sale.paid_amount, sale.due_amount, payStatus, payMethod,
+           `Billed as ${sale.sale_number}`, header.id, admin_id]
+        );
+        await conn.query(
+          `UPDATE pharmacy_dispensing_items SET status = 'dispensed' WHERE dispensing_id = ? AND status = 'pending'`,
+          [header.id]
+        );
+        await conn.commit();
+        return res.json({
+          success: true,
+          message: `Dispensing closed — billed as ${sale.sale_number}`,
+          data: {
+            id: header.id,
+            dispensing_number: header.dispensing_number,
+            sale_id: sale.id,
+            sale_number: sale.sale_number,
+            grand_total: Number(sale.grand_total),
+            paid_amount: Number(sale.paid_amount),
+            due_amount: Number(sale.due_amount),
+            payment_status: payStatus,
+          },
+        });
+      }
+
       for (const it of items) {
         if (!it.batch_id || it.dispensed_quantity <= 0) continue;
         const [[batch]] = await conn.query(
-          `SELECT quantity_available, units_per_pack FROM pharmacy_medicine_batches
+          `SELECT quantity_available, units_per_pack, batch_number, status, expiry_date,
+                  (SELECT pm.status FROM pharmacy_medicines pm WHERE pm.id = pharmacy_medicine_batches.medicine_id) AS medicine_status
+             FROM pharmacy_medicine_batches
             WHERE id = ? AND admin_id = ?${bSql} FOR UPDATE`,
           [it.batch_id, admin_id, ...bPrm]
         );
+        // N2 (10 Nov 2026): never dispense a blocked or expired batch or a deactivated medicine.
+        if (batch) {
+          const exp = batch.expiry_date ? String(batch.expiry_date).slice(0, 10) : null;
+          const today = new Date(Date.now() + 330 * 60 * 1000).toISOString().slice(0, 10); // IST
+          const stop =
+            batch.medicine_status && batch.medicine_status !== 'active' ? 'its medicine has been deactivated' :
+            batch.status !== 'active' ? `it is ${batch.status}` :
+            exp && exp < today ? `it expired on ${exp}` : null;
+          if (stop) {
+            await conn.rollback();
+            return res.status(409).json({
+              success: false,
+              message: `Batch ${batch.batch_number} can't be dispensed — ${stop}. Remove it and park the sale again.`,
+            });
+          }
+        }
         const uppFin = unitsPerPack(batch || {});
         const tabletsFin = tabletsOf(it.dispensed_quantity, uppFin);
         if (!batch || Number(batch.quantity_available) < tabletsFin) {

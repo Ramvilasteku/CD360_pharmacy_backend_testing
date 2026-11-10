@@ -264,10 +264,35 @@ router.get(
 /* ============================================================
    UPDATE medicine
 ============================================================ */
+/* ============================================================
+   M5 (10 Nov 2026) — the shared catalogue is edited centrally, not by tenants.
+
+   medicine_data is ONE list shared by every pharmacy, so renaming, switching off or
+   deleting an entry changes it for everyone. Any pharmacy can still ADD a missing
+   medicine (POST /post, used by the Medicines screen and CSV import) and read the list;
+   only catalogue editors can change or remove entries.
+
+   There is no super-admin login in this backend yet, so catalogue editors are named
+   by admin id in .env:   PHARMACY_CATALOG_EDITOR_IDS=1,42
+   Not set → nobody can edit or delete through the API (change it in the database).
+============================================================ */
+const CATALOG_EDITOR_IDS = new Set(
+  String(process.env.PHARMACY_CATALOG_EDITOR_IDS || "")
+    .split(",").map((x) => Number(x.trim())).filter((n) => Number.isInteger(n) && n > 0)
+);
+function catalogEditorsOnly(req, res, next) {
+  const isEditor = req.user && req.user.role === "admin" && CATALOG_EDITOR_IDS.has(Number(req.user.id));
+  if (isEditor) return next();
+  return res.status(403).json({
+    success: false,
+    message: "The medicine catalogue is shared by every pharmacy, so entries can only be changed or removed centrally. Add a new medicine instead, or ask support to correct this one.",
+  });
+}
+
 router.put(
   "/update/:id",
   authMiddleware,
-  allowPermissions("pharmacy.medicines.edit"),
+  catalogEditorsOnly,
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -386,7 +411,7 @@ router.put(
 router.delete(
   "/delete/:id",
   authMiddleware,
-  allowPermissions("pharmacy.medicines.delete"),
+  catalogEditorsOnly,
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -428,7 +453,7 @@ router.delete(
 router.patch(
   "/status/:id",
   authMiddleware,
-  allowPermissions("pharmacy.medicines.edit"),
+  catalogEditorsOnly,
   async (req, res) => {
     try {
       const { id } = req.params;

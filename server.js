@@ -84,6 +84,7 @@ const userRoleAssignment = require("./modules/userroleassignment.js");
 // ---------- Pharmacy ----------
 const pharmacyDispensingRoutes = require("./routes/pharmacy/pharmacy_dispensing.js");
 const pharmacyreturnRoutes = require("./routes/pharmacy/pharmacy_returns.js");
+const pharmacySubstitutionRoutes = require("./routes/pharmacy/substitutions.js");
 const pharmacypaymentRoutes = require("./routes/pharmacy/pharmacy_payments.js");
 const pharmacyRoute = require("./modules/userroleassignment.js");
 const PermissionRoute = require("./modules/permissions.js");
@@ -119,6 +120,14 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
+// L2: Express 5 leaves req.body undefined when a request has no body, and every
+// `const { x } = req.body` then throws — a 500 (one route even hung) instead of the
+// route's own "x is required" message. An empty object lets that validation answer.
+// (Upload routes are unaffected: multer sets its own req.body.)
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
 
 // 🔥 THIS LINE IS THE FIX
 app.use("/Images", express.static(path.join(__dirname, "Images")));
@@ -140,6 +149,9 @@ app.get(
   authController.loginAuth,
   authController.getAllModules,
 );
+
+// M2: the frontend's useAccess hook loads the signed-in user's roles + permissions from here
+app.get("/api/getMyAccess", authController.loginAuth, authController.getMyAccess);
 
 app.get(
   "/api/role-modules/:role",
@@ -230,6 +242,10 @@ app.use("/api/user-role-assignments", userRoleAssignment);
 // ---------- Pharmacy ROUTES ----------
 app.use("/api", pharmacyDispensingRoutes);
 app.use("/api", pharmacyreturnRoutes);
+// H1: the Sales Returns screen calls /api/sales/return/... — mount the same router there too
+app.use("/api/sales/return", pharmacyreturnRoutes);
+// M1: substitution log used by POS and Existing-patient sale
+app.use("/api/pharmacy/substitutions", pharmacySubstitutionRoutes);
 app.use("/api/pharmacy", pharmacypaymentRoutes);
 app.use("/api/user-role-assignments",pharmacyRoute);
 app.use("/api/permissions", PermissionRoute);

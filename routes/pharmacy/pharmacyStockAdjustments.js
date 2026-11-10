@@ -53,9 +53,16 @@ const VALID_REASONS = [
   "correction",
   "opening_stock",
   "other",
+  // M4 (10 Nov 2026): offered by the Stock Adjustment screen but refused until now.
+  // Needs the DB enum widened too — migrations/2026-11-10_pharmacy_stock_adjustment_reasons.sql
+  "theft",
+  "return",
 ];
 // reasons that can only take stock away
-const OUT_ONLY = ["damaged", "expired", "lost"];
+const OUT_ONLY = ["damaged", "expired", "lost", "theft"];
+// reasons that can only bring stock back (a customer handing goods back without a bill
+// to return against — with a bill, use Sales → Returns, which also records the refund)
+const IN_ONLY = ["return"];
 const UNITS = ["tablet", "strip"];
 
 /* ============================================================
@@ -65,6 +72,7 @@ function reasonToTxnType(reason) {
   if (reason === "damaged") return "damaged";
   if (reason === "expired") return "expired";
   if (reason === "opening_stock") return "opening_stock";
+  if (reason === "return") return "return";
   return "adjustment";
 }
 
@@ -108,6 +116,9 @@ router.post(
       if (!UNITS.includes(unit)) return bad(res, "unit must be 'tablet' or 'strip'");
       if (adjustment_type === "increase" && OUT_ONLY.includes(reason)) {
         return bad(res, `A "${reason}" adjustment can only take stock out. Use "correction" or "physical_count" to add stock.`);
+      }
+      if (adjustment_type === "decrease" && IN_ONLY.includes(reason)) {
+        return bad(res, `A "${reason}" adjustment can only bring stock back. Use "correction" or "physical_count" to take stock out.`);
       }
 
       const qty = Number(quantity);

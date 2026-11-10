@@ -403,15 +403,20 @@ router.post(
         });
       }
 
-      // TODO: verify supplier when pharmacy_suppliers table exists
-      // const [supplier] = await conn.query(
-      //   `SELECT id FROM pharmacy_suppliers WHERE id = ? AND admin_id = ? LIMIT 1`,
-      //   [supplier_id, tenantAdminId]
-      // );
-      // if (!supplier.length) {
-      //   await conn.rollback();
-      //   return res.status(404).json({ success: false, message: "Supplier not found" });
-      // }
+      // N6 (10 Nov 2026): the supplier must be one of THIS pharmacy's suppliers. Without
+      // this a PO could name another pharmacy's supplier — and show, and email, their details.
+      const [supplier] = await conn.query(
+        `SELECT id, status FROM pharmacy_suppliers WHERE id = ? AND admin_id = ? LIMIT 1`,
+        [supplier_id, tenantAdminId]
+      );
+      if (!supplier.length) {
+        await conn.rollback();
+        return res.status(404).json({ success: false, message: "Supplier not found" });
+      }
+      if (supplier[0].status && supplier[0].status !== "active") {
+        await conn.rollback();
+        return res.status(409).json({ success: false, message: "This supplier is inactive. Reactivate it or choose another." });
+      }
 
       // Verify medicines belong to this tenant
       const medCheck = await verifyMedicines(

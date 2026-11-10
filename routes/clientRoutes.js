@@ -165,6 +165,49 @@ router.post(
 /*ALL GET METHODS ===================================================== */
 
 /* =====================================================
+   H2 (10 Nov 2026) — PATIENT SEARCH FOR THE PHARMACY
+   GET /api/clients/search?q=<name or mobile>
+   Used by Sales → New sale → Existing patient. Guarded by pharmacy
+   permissions (a pharmacist is not a receptionist), scoped to the
+   caller's own clinic/pharmacy, active patients only, max 20 rows.
+===================================================== */
+const { allowPermissions } = require("../middlewares/allowPermissions");
+
+router.get(
+  "/clients/search",
+  authMiddleware,
+  allowPermissions("pharmacy.sales.create", "pharmacy.sales.view"),
+  async (req, res) => {
+    try {
+      const adminId = req.user.role === "admin" ? req.user.id : req.user.adminId;
+      const q = String(req.query.q || "").trim();
+      if (q.length < 2) return res.json({ success: true, data: [] });
+
+      const digits = q.replace(/\D/g, "");
+      const isPhone = digits.length >= 3 && digits.length === q.replace(/[\s+-]/g, "").length;
+      const like = `%${q.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+
+      const [rows] = await db.query(
+        `SELECT id, name, mobile, mobile AS phone, email, gender, dob,
+                CASE WHEN dob IS NULL THEN NULL
+                     ELSE TIMESTAMPDIFF(YEAR, dob, CURDATE()) END AS age
+           FROM clients
+          WHERE admin_id = ?
+            AND (status IS NULL OR status = 1)
+            AND ${isPhone ? "mobile LIKE ?" : "(name LIKE ? OR email LIKE ? OR mobile LIKE ?)"}
+          ORDER BY name ASC
+          LIMIT 20`,
+        isPhone ? [adminId, `%${digits}%`] : [adminId, like, like, like]
+      );
+      return res.json({ success: true, data: rows });
+    } catch (err) {
+      console.error("Client search error:", err);
+      return res.status(500).json({ success: false, message: "Patient search failed" });
+    }
+  }
+);
+
+/* =====================================================
    GET ALL PATIENTS (ADMIN)
 ===================================================== */
 router.get(

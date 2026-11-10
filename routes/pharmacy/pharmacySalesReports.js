@@ -26,6 +26,8 @@ const axios = require("axios");
 
 const { authMiddleware } = require("../../middlewares/authMiddleware");
 const { allowPermissions } = require("../../middlewares/allowPermissions");
+// H4: the Expiring Soon PDF builder was used below but never imported
+const buildExpiringSoonReportPdf = require("../../utils/Buildexpiringsoonreportpdf");
 // Branch scoping. Admins may pass ?branch=<name> (the Branch dropdown); staff are always
 // pinned to their own staff.branch. With one branch configured nothing is filtered.
 const { resolveScope, historyBranchSql, recordScope, sendBranchError } = require("../../utils/pharmacyBranch");
@@ -538,10 +540,12 @@ function exportPDF(res, data, filename, meta = {}) {
    ROUTE: Main dispatcher
    Handles all report types via query params
 ============================================================ */
-async function handleReport(req, res, start, end) {
+async function handleReport(req, res, start, end, defaultGroupBy = "day") {
   try {
     const tenantAdminId = getTenantAdminId(req);
-    const { format = "json", group_by = "day" } = req.query;
+    const { format = "json" } = req.query;
+    // M9: Express 5 makes req.query read-only, so the caller passes its default instead
+    const group_by = req.query.group_by || defaultGroupBy;
 
     // Validate dates
     if (!start || !end) {
@@ -679,9 +683,8 @@ router.get(
     const year = parseInt(req.query.year, 10) || new Date().getFullYear();
     const start = `${year}-01-01`;
     const end = `${year}-12-31`;
-    // Default group_by to month for yearly
-    if (!req.query.group_by) req.query.group_by = "month";
-    return handleReport(req, res, start, end);
+    // Default group_by to month for yearly (M9)
+    return handleReport(req, res, start, end, "month");
   }
 );
 

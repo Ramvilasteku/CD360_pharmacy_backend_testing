@@ -726,6 +726,10 @@ if (resolvedUserType === "admin" && access.adminModules.length) {
         features: access.features,
         permissions: access.permissions,
         adminModules: access.adminModules,
+        // The tenant owner passes every allowPermissions() check on the server, so the
+        // screens must not hide anything from them either — even a key missing from the
+        // permissions table. useAccess reads is_admin: true as "show everything".
+        is_admin: resolvedUserType === "admin",
       },
     });
   } catch (err) {

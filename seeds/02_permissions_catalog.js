@@ -1,204 +1,221 @@
+// seeds/02_permissions_catalog.js
+//
+// L7 (10 Nov 2026): brought in line with the permission catalogue v3 (6 Nov 2026) —
+// exactly the 46 keys the pharmacy routes check, one per feature + action (the Roles
+// screen shows one checkbox per feature + action, so two keys sharing a pair collide).
+// The old version had 23 keys, missed B2B, sales returns, purchase transfer, payments
+// and inventory, and still carried approve/export keys no route checks.
+//
+// Insert-only: existing rows (and their ids, which role grants point at) are left alone.
 exports.seed = async function (knex) {
+  const p = (feature_key, area, action, permission_key, label) => ({
+    permission_key,
+    permission_name: `${area} — ${label}`,
+    feature_key,
+    module_key: "pharmacy",
+    action,
+    is_active: 1,
+  });
+
   const permissions = [
-    // ═══════════════ MEDICINES FEATURE ═══════════════
-    {
-      permission_key: 'pharmacy.medicines.view',
-      permission_name: 'View Medicines',
-      feature_key: 'medicines',
-      module_key: 'pharmacy',
-      action: 'view',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.medicines.create',
-      permission_name: 'Create Medicine',
-      feature_key: 'medicines',
-      module_key: 'pharmacy',
-      action: 'create',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.medicines.edit',
-      permission_name: 'Edit Medicine',
-      feature_key: 'medicines',
-      module_key: 'pharmacy',
-      action: 'edit',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.medicines.delete',
-      permission_name: 'Delete Medicine',
-      feature_key: 'medicines',
-      module_key: 'pharmacy',
-      action: 'delete',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.medicines.export',
-      permission_name: 'Export Medicines',
-      feature_key: 'medicines',
-      module_key: 'pharmacy',
-      action: 'export',
-      is_active: 1,
-    },
-
-    // ═══════════════ SUPPLIERS FEATURE ═══════════════
-    {
-      permission_key: 'pharmacy.suppliers.view',
-      permission_name: 'View Suppliers',
-      feature_key: 'suppliers',
-      module_key: 'pharmacy',
-      action: 'view',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.suppliers.create',
-      permission_name: 'Create Supplier',
-      feature_key: 'suppliers',
-      module_key: 'pharmacy',
-      action: 'create',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.suppliers.edit',
-      permission_name: 'Edit Supplier',
-      feature_key: 'suppliers',
-      module_key: 'pharmacy',
-      action: 'edit',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.suppliers.delete',
-      permission_name: 'Delete Supplier',
-      feature_key: 'suppliers',
-      module_key: 'pharmacy',
-      action: 'delete',
-      is_active: 1,
-    },
-
-    // ═══════════════ SALES FEATURE ═══════════════
-    {
-      permission_key: 'pharmacy.sales.view',
-      permission_name: 'View Sales',
-      feature_key: 'sales',
-      module_key: 'pharmacy',
-      action: 'view',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.sales.create',
-      permission_name: 'Create Sale',
-      feature_key: 'sales',
-      module_key: 'pharmacy',
-      action: 'create',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.sales.edit',
-      permission_name: 'Edit Sale',
-      feature_key: 'sales',
-      module_key: 'pharmacy',
-      action: 'edit',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.sales.delete',
-      permission_name: 'Delete Sale',
-      feature_key: 'sales',
-      module_key: 'pharmacy',
-      action: 'delete',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.sales.export',
-      permission_name: 'Export Sales',
-      feature_key: 'sales',
-      module_key: 'pharmacy',
-      action: 'export',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.sales.approve',
-      permission_name: 'Approve Sale',
-      feature_key: 'sales',
-      module_key: 'pharmacy',
-      action: 'approve',
-      is_active: 1,
-    },
-
-    // ═══════════════ PURCHASE FEATURE ═══════════════
-    {
-      permission_key: 'pharmacy.purchase.view',
-      permission_name: 'View Purchase Orders',
-      feature_key: 'purchase',
-      module_key: 'pharmacy',
-      action: 'view',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.purchase.create',
-      permission_name: 'Create Purchase Order',
-      feature_key: 'purchase',
-      module_key: 'pharmacy',
-      action: 'create',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.purchase.edit',
-      permission_name: 'Edit Purchase Order',
-      feature_key: 'purchase',
-      module_key: 'pharmacy',
-      action: 'edit',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.purchase.delete',
-      permission_name: 'Delete Purchase Order',
-      feature_key: 'purchase',
-      module_key: 'pharmacy',
-      action: 'delete',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.purchase.export',
-      permission_name: 'Export Purchase Orders',
-      feature_key: 'purchase',
-      module_key: 'pharmacy',
-      action: 'export',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.purchase.approve',
-      permission_name: 'Approve Purchase Order',
-      feature_key: 'purchase',
-      module_key: 'pharmacy',
-      action: 'approve',
-      is_active: 1,
-    },
-
-    // ═══════════════ REPORTS FEATURE ═══════════════
-    {
-      permission_key: 'pharmacy.reports.view',
-      permission_name: 'View Reports',
-      feature_key: 'reports',
-      module_key: 'pharmacy',
-      action: 'view',
-      is_active: 1,
-    },
-    {
-      permission_key: 'pharmacy.reports.export',
-      permission_name: 'Export Reports',
-      feature_key: 'reports',
-      module_key: 'pharmacy',
-      action: 'export',
-      is_active: 1,
-    },
+    // Medicines
+    p("medicines", "Medicines", "view", "pharmacy.medicines.view", "View"),
+    p(
+      "medicines",
+      "Medicines",
+      "create",
+      "pharmacy.medicines.create",
+      "Create",
+    ),
+    p("medicines", "Medicines", "edit", "pharmacy.medicines.edit", "Edit"),
+    p(
+      "medicines",
+      "Medicines",
+      "delete",
+      "pharmacy.medicines.delete",
+      "Delete",
+    ),
+    // Inventory
+    p("inventory", "Inventory", "view", "pharmacy.stock.view", "View"),
+    p(
+      "inventory",
+      "Inventory",
+      "create",
+      "pharmacy.stock.create",
+      "Adjust / add stock",
+    ),
+    // Sales
+    p("sales", "Sales", "view", "pharmacy.sales.view", "View"),
+    p("sales", "Sales", "create", "pharmacy.sales.create", "Create (bill)"),
+    p("sales", "Sales", "edit", "pharmacy.sales.edit", "Edit"),
+    p("sales", "Sales", "cancel", "pharmacy.sales.cancel", "Cancel"),
+    p("sales", "Sales", "delete", "pharmacy.sales.delete", "Delete"),
+    // Customers
+    p("customers", "Customers", "view", "pharmacy.customers.view", "View"),
+    p(
+      "customers",
+      "Customers",
+      "create",
+      "pharmacy.customers.create",
+      "Create",
+    ),
+    p("customers", "Customers", "edit", "pharmacy.customers.edit", "Edit"),
+    p(
+      "customers",
+      "Customers",
+      "delete",
+      "pharmacy.customers.delete",
+      "Delete",
+    ),
+    // Sales returns
+    p(
+      "sales-returns",
+      "Sales returns",
+      "view",
+      "pharmacy.sales-returns.view",
+      "View",
+    ),
+    p(
+      "sales-returns",
+      "Sales returns",
+      "create",
+      "pharmacy.sales-returns.create",
+      "Create",
+    ),
+    p(
+      "sales-returns",
+      "Sales returns",
+      "edit",
+      "pharmacy.sales-returns.edit",
+      "Edit",
+    ),
+    p(
+      "sales-returns",
+      "Sales returns",
+      "cancel",
+      "pharmacy.sales-returns.cancel",
+      "Cancel",
+    ),
+    p(
+      "sales-returns",
+      "Sales returns",
+      "override",
+      "pharmacy.sales-returns.override",
+      "Accept past the return window",
+    ),
+    // Payments
+    p("payments", "Payments", "view", "pharmacy.payments.view", "View"),
+    p("payments", "Payments", "create", "pharmacy.payments.create", "Create"),
+    p("payments", "Payments", "update", "pharmacy.payments.update", "Update"),
+    p("payments", "Payments", "delete", "pharmacy.payments.delete", "Delete"),
+    // Purchase
+    p("purchase", "Purchase", "view", "pharmacy.purchase.view", "View"),
+    p("purchase", "Purchase", "create", "pharmacy.purchase.create", "Create"),
+    p("purchase", "Purchase", "edit", "pharmacy.purchase.edit", "Edit"),
+    p("purchase", "Purchase", "delete", "pharmacy.purchase.delete", "Delete"),
+    p(
+      "purchase",
+      "Purchase",
+      "generate_PO",
+      "pharmacy.purchase.generate_create",
+      "Generate PO",
+    ),
+    p(
+      "purchase",
+      "Purchase",
+      "sale_based_order",
+      "pharmacy.purchase.salebased_create",
+      "Sale-based order",
+    ),
+    p(
+      "purchase",
+      "Purchase",
+      "receive_PO",
+      "pharmacy.purchase.receive",
+      "Receive PO",
+    ),
+    // Purchase returns
+    p(
+      "purchase_return",
+      "Purchase returns",
+      "view",
+      "pharmacy.purchase_return.view",
+      "View",
+    ),
+    p(
+      "purchase_return",
+      "Purchase returns",
+      "create",
+      "pharmacy.purchase_return.create",
+      "Create",
+    ),
+    p(
+      "purchase_return",
+      "Purchase returns",
+      "edit",
+      "pharmacy.purchase_return.edit",
+      "Edit",
+    ),
+    // Purchase transfer
+    p(
+      "purchase_transfer",
+      "Purchase transfer",
+      "view",
+      "pharmacy.purchase_transfer.view",
+      "View",
+    ),
+    p(
+      "purchase_transfer",
+      "Purchase transfer",
+      "create",
+      "pharmacy.purchase_transfer.create",
+      "Create",
+    ),
+    p(
+      "purchase_transfer",
+      "Purchase transfer",
+      "edit",
+      "pharmacy.purchase_transfer.edit",
+      "Edit",
+    ),
+    // B2B sales
+    p("b2b_sales", "B2B sales", "view", "pharmacy.b2b_sales.view", "View"),
+    p(
+      "b2b_sales",
+      "B2B sales",
+      "create",
+      "pharmacy.b2b_sales.create",
+      "Create",
+    ),
+    p("b2b_sales", "B2B sales", "edit", "pharmacy.b2b_sales.edit", "Edit"),
+    // Suppliers
+    p("suppliers", "Suppliers", "view", "pharmacy.suppliers.view", "View"),
+    p(
+      "suppliers",
+      "Suppliers",
+      "create",
+      "pharmacy.suppliers.create",
+      "Create",
+    ),
+    p("suppliers", "Suppliers", "edit", "pharmacy.suppliers.edit", "Edit"),
+    p(
+      "suppliers",
+      "Suppliers",
+      "delete",
+      "pharmacy.suppliers.delete",
+      "Delete",
+    ),
+    // Reports
+    p("reports", "Reports", "view", "pharmacy.reports.view", "View"),
+    p("reports", "Reports", "export", "pharmacy.reports.export", "Export"),
   ];
 
-  await knex('permissions')
+  await knex("permissions")
     .insert(permissions)
-    .onConflict('permission_key')
+    .onConflict("permission_key")
     .ignore();
 
-  console.log(`Seeded ${permissions.length} pharmacy permissions (existing ones skipped)`);
+  console.log(
+    `Seeded ${permissions.length} pharmacy permissions (existing ones skipped)`,
+  );
 };

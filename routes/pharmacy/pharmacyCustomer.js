@@ -250,7 +250,8 @@ router.get(
 router.get(
   "/get/moblie-no/:mobile",
   authMiddleware,
-  allowPermissions("pharmacy.customers.view"),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions("pharmacy.customers.view", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const tenantAdminId = getTenantAdminId(req);

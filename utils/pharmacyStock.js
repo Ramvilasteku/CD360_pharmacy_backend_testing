@@ -149,4 +149,37 @@ async function allocate(conn, { adminId, medicine, saleUnit, qty, batchId = null
   return out;
 }
 
-module.exports = { recordMove, ledgerRow, allocate, istNow, istToday, LEDGER_TYPES };
+// H5: moved here from routes/pharmacy/batches.js (which is not mounted) so medicines.js can use it
+/**
+ * RE-PACK one batch that was counted in packs (units_per_pack = 1) as strips of `upp` tablets.
+ * Used when the migration couldn't read a medicine's pack size and its batches were left at 1:
+ * received / available / free are all multiplied by upp, units_per_pack becomes upp, and one
+ * ledger row records the tablets added. The batch must already be locked (FOR UPDATE) by the caller.
+ * Returns { batch_id, batch_number, branch, packs, tablets } or null when there is nothing to do.
+ */
+async function repackBatch(conn, { adminId, userId, batch, upp }) {
+  if (Number(batch.units_per_pack) !== 1 || !(upp > 1)) return null;
+  const packs = Number(batch.quantity_available) || 0;
+  const tablets = packs * upp;
+  await conn.query(
+    `UPDATE pharmacy_medicine_batches
+        SET units_per_pack = ?, quantity_received = quantity_received * ?,
+            quantity_available = quantity_available * ?, free_quantity = free_quantity * ?, updated_at = NOW()
+      WHERE id = ? AND admin_id = ? AND units_per_pack = 1`,
+    [upp, upp, upp, upp, batch.id, adminId]
+  );
+  await ledgerRow(conn, {
+    adminId,
+    userId,
+    batchId: batch.id,
+    medicineId: batch.medicine_id,
+    type: "adjustment",
+    tabletsIn: tablets - packs,
+    referenceId: batch.id,
+    referenceNumber: batch.batch_number,
+    notes: `Pack size set to ${upp} per strip: ${packs} ${packs === 1 ? "pack" : "packs"} counted as ${tablets} tablets`,
+  });
+  return { batch_id: Number(batch.id), batch_number: batch.batch_number, branch: batch.branch || null, packs, tablets };
+}
+
+module.exports = { recordMove, ledgerRow, allocate, istNow, istToday, LEDGER_TYPES, repackBatch };

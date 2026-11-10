@@ -240,10 +240,24 @@ router.post(
         message: 'return_number, return_date, return_type are required',
       });
     }
-    if (!['customer_return', 'supplier_return'].includes(return_type)) {
+    // N7 (10 Nov 2026): supplier returns live in Purchase → Returns (pharmacyPurchaseReturns.js),
+    // which takes the stock out properly. Here a supplier_return wrote a stock-out row to the
+    // ledger WITHOUT reducing the batch, so the ledger and the shelf disagreed.
+    if (return_type === 'supplier_return') {
       return res.status(400).json({
         success: false,
-        message: "return_type must be 'customer_return' or 'supplier_return'",
+        message: 'Supplier returns are made from Purchase → Returns, not from Sales returns.',
+      });
+    }
+    if (return_type !== 'customer_return') {
+      return res.status(400).json({ success: false, message: "return_type must be 'customer_return'" });
+    }
+    // N5: a customer return must name the bill it comes from. Without one, any quantity of
+    // any batch could be put back on the shelf and any refund recorded.
+    if (!sale_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Pick the bill this return is for — returns without a bill are not allowed.',
       });
     }
     if (!Array.isArray(items) || items.length === 0) {
@@ -274,12 +288,21 @@ router.post(
       try {
         if (sale_id) {
           const [saleRows] = await conn.query(
-            `SELECT id, branch FROM pharmacy_sales WHERE id = ? AND admin_id = ? LIMIT 1`,
+            `SELECT id, branch, status FROM pharmacy_sales WHERE id = ? AND admin_id = ? LIMIT 1`,
             [sale_id, admin_id]
           );
           if (!saleRows.length) {
             await conn.rollback();
             return res.status(404).json({ success: false, message: 'Sale not found' });
+          }
+          // A bill can be returned in parts, so partially_returned stays returnable; a draft
+          // (never paid) or a cancelled bill took no stock out and is not.
+          if (!['completed', 'partially_returned'].includes(saleRows[0].status)) {
+            await conn.rollback();
+            return res.status(409).json({
+              success: false,
+              message: `This bill can't be returned — it is ${String(saleRows[0].status || 'not completed').replace(/_/g, ' ')}.`,
+            });
           }
           const rs = await recordScope(conn, req, saleRows[0].branch, { notFound: 'Sale not found' });
           multiBranch = rs.scope.multi;
@@ -309,6 +332,7 @@ router.post(
 if (sale_id) {
   const [saleItems] = await conn.query(
     `SELECT si.medicine_id, si.batch_id, si.quantity AS sold_qty,
+            si.total_amount AS line_total,
             ps.sale_date,
             pm.return_policy,
             md.medicine_name,
@@ -326,7 +350,7 @@ if (sale_id) {
                   AND (status IS NULL OR status <> 'cancelled')
              )
       WHERE si.sale_id = ? AND ps.admin_id = ?
-      GROUP BY si.medicine_id, si.batch_id, si.quantity, ps.sale_date, pm.return_policy, md.medicine_name`,
+      GROUP BY si.medicine_id, si.batch_id, si.quantity, si.total_amount, ps.sale_date, pm.return_policy, md.medicine_name`,
     // admin_id added 26 Oct 2026: this lookup filtered on sale_id alone, so a return could
     // be validated against — and restock the batches of — another tenant's sale.
     [sale_id, admin_id, sale_id, admin_id]
@@ -336,8 +360,8 @@ if (sale_id) {
   for (const reqItem of items) {
     const match = saleItems.find(
       (s) =>
-        s.medicine_id === reqItem.medicine_id &&
-        s.batch_id === reqItem.batch_id
+        Number(s.medicine_id) === Number(reqItem.medicine_id) &&
+        Number(s.batch_id) === Number(reqItem.batch_id)
     );
     if (!match) {
       await conn.rollback();
@@ -418,11 +442,27 @@ if (sale_id) {
       check.snapshot.approved_by = created_by;
     }
 
+    // N5: what this line is worth back — the price actually charged on the bill
+    // (after its line discount, with its GST), per unit sold.
+    reqItem._refund_cap = (Number(match.line_total) || 0) / Math.max(1, Number(match.sold_qty) || 1) * Number(reqItem.quantity);
+
     // Attach snapshot to the request item for later insert
     reqItem._snapshot = check.snapshot;
     reqItem._approved_by = check.snapshot.overridden ? created_by : null;
   }
 }
+
+      // N5: the refund can't be more than these items were billed at.
+      const refundCap = Math.round(items.reduce((t, it) => t + (Number(it._refund_cap) || 0), 0) * 100) / 100;
+      const refundAsked = Math.max(0, Number(refund_amount) || 0);
+      if (refundAsked > refundCap + 0.05) {
+        await conn.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Refund ₹${refundAsked.toFixed(2)} is more than these items were billed at (₹${refundCap.toFixed(2)}).`,
+          max_refund: refundCap,
+        });
+      }
 
       // ── 2. Insert return header ──
       const [headerResult] = await conn.query(
@@ -439,8 +479,9 @@ if (sale_id) {
           return_date,
           return_type,
           reason || null,
-          total_amount || 0,
-          refund_amount || 0,
+          refundCap,                                   // N5: value of the goods, from the bill
+          refund_amount === undefined || refund_amount === null || refund_amount === ''
+            ? refundCap : refundAsked,                 // default: refund in full
           status || 'completed',
           processed_by || created_by,
           notes || null,

@@ -14,8 +14,7 @@ const {
   plural,
 } = require("../../utils/pharmacyUnits");
 const { BranchError, resolveScope, batchFilter, sendBranchError } = require("../../utils/pharmacyBranch");
-const { istToday } = require("../../utils/pharmacyStock");
-const { repackBatch } = require("./pharmacyMedicineBatches");
+const { istToday, repackBatch } = require("../../utils/pharmacyStock");
 
 /*
    UNITS (see utils/pharmacyUnits.js)
@@ -489,7 +488,8 @@ try {
 router.get(
   "/",
   authMiddleware,
-  allowPermissions("pharmacy.medicines.view"),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions("pharmacy.medicines.view", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const tenantAdminId = getTenantAdminId(req);
@@ -670,7 +670,8 @@ router.get(
 router.get(
   "/substitutes",
   authMiddleware,
-  allowPermissions("pharmacy.medicines.view"),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions("pharmacy.medicines.view", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const tenantAdminId = getTenantAdminId(req);
@@ -787,7 +788,8 @@ router.get(
 router.get(
   "/catalog-search",
   authMiddleware,
-  allowPermissions("pharmacy.medicines.view"),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions("pharmacy.medicines.view", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const { search = "", limit = 5 } = req.query;
@@ -1239,7 +1241,8 @@ router.patch(
 router.get(
   "/lookup/barcode/:barcode",
   authMiddleware,
-  allowPermissions("pharmacy.medicines.view"),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions("pharmacy.medicines.view", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const tenantAdminId = getTenantAdminId(req);

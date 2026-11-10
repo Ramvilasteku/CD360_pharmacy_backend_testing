@@ -1823,6 +1823,209 @@ router.get(
 );
 
 /* ═══════════════════════════════════════════════════════════════════
+   💊 PHARMACY VIEW OF PRESCRIPTIONS  (H3, 10 Nov 2026)
+
+   Used by Sales → New sale → Existing patient (PrescriptionsPanel.jsx and
+   ExistingClient.js). Guarded by pharmacy permissions, not clinic roles, so a
+   pharmacist can see a patient's prescriptions without being a doctor or
+   receptionist. Everything is scoped to the caller's own pharmacy (admin_id).
+
+   GET /api/prescriptions/pharmacy/get?patient_id=   list, newest first
+   GET /api/prescriptions/pharmacy/get/:id           one, with medicines/tests
+   GET /api/prescriptions/pharmacy/resolve/:id       each prescribed medicine
+        matched to this pharmacy's stock: { data: [...], summary: {...} }
+═══════════════════════════════════════════════════════════════════ */
+const { allowPermissions } = require("../middlewares/allowPermissions");
+const { resolveScope, batchFilter, sendBranchError } = require("../utils/pharmacyBranch");
+const { SQL_STRIPS } = require("../utils/pharmacyStripView");
+
+const RX_PHARMACY_VIEW = allowPermissions("pharmacy.sales.view", "pharmacy.sales.create");
+
+router.get("/pharmacy/get", authMiddleware, RX_PHARMACY_VIEW, async (req, res) => {
+  try {
+    const adminId = getAdminId(req.user);
+    const patientId = Number(req.query.patient_id) || 0;
+    if (!patientId) {
+      return res.status(400).json({ success: false, message: "patient_id is required" });
+    }
+    const [rows] = await db.query(
+      `SELECT p.id, p.patient_id, p.doctor_id, p.appointment_id, p.diagnosis, p.notes,
+              p.created_at, p.updated_at,
+              s.name AS doctor_name,
+              a.appointment_date,
+              COALESCE(JSON_LENGTH(p.medicines_json), 0) AS medicine_count,
+              COALESCE(JSON_LENGTH(p.tests_json), 0)     AS test_count
+         FROM prescriptions p
+         JOIN clients c        ON c.id = p.patient_id AND c.admin_id = ?
+    LEFT JOIN staff s          ON s.id = p.doctor_id
+    LEFT JOIN appointments a   ON a.id = p.appointment_id
+        WHERE p.admin_id = ? AND p.patient_id = ?
+        ORDER BY p.created_at DESC
+        LIMIT 50`,
+      [adminId, adminId, patientId]
+    );
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error("Pharmacy prescriptions list error:", err);
+    return res.status(500).json({ success: false, message: "Couldn't load prescriptions" });
+  }
+});
+
+async function loadPharmacyRx(adminId, id) {
+  const [[rx]] = await db.query(
+    `SELECT p.*, s.name AS doctor_name, c.name AS patient_name
+       FROM prescriptions p
+       JOIN clients c ON c.id = p.patient_id AND c.admin_id = ?
+  LEFT JOIN staff s   ON s.id = p.doctor_id
+      WHERE p.id = ? AND p.admin_id = ?`,
+    [adminId, id, adminId]
+  );
+  return rx || null;
+}
+
+router.get("/pharmacy/get/:id", authMiddleware, RX_PHARMACY_VIEW, async (req, res) => {
+  try {
+    const rx = await loadPharmacyRx(getAdminId(req.user), req.params.id);
+    if (!rx) return res.status(404).json({ success: false, message: "Prescription not found" });
+    return res.json({
+      success: true,
+      data: {
+        id: rx.id,
+        patient_id: rx.patient_id,
+        patient_name: rx.patient_name,
+        doctor_id: rx.doctor_id,
+        doctor_name: rx.doctor_name,
+        diagnosis: rx.diagnosis,
+        notes: rx.notes,
+        created_at: rx.created_at,
+        medicines: safeParse(rx.medicines_json),
+        tests: safeParse(rx.tests_json),
+      },
+    });
+  } catch (err) {
+    console.error("Pharmacy prescription detail error:", err);
+    return res.status(500).json({ success: false, message: "Couldn't load prescription" });
+  }
+});
+
+router.get("/pharmacy/resolve/:id", authMiddleware, RX_PHARMACY_VIEW, async (req, res) => {
+  try {
+    const adminId = getAdminId(req.user);
+    const rx = await loadPharmacyRx(adminId, req.params.id);
+    if (!rx) return res.status(404).json({ success: false, message: "Prescription not found" });
+
+    // Stock comes from the caller's branch (staff) or the branch the admin picked.
+    let scope;
+    try {
+      scope = await resolveScope(db, req, { wanted: req.query.branch });
+    } catch (e) {
+      if (sendBranchError(res, e)) return;
+      throw e;
+    }
+    const bf = batchFilter(scope, "b");
+
+    const medicines = safeParse(rx.medicines_json);
+    const list = Array.isArray(medicines) ? medicines : [];
+    const out = [];
+    const summary = { total: list.length, in_stock: 0, out_of_stock: 0, not_in_inventory: 0 };
+
+    for (const m of list) {
+      const name = String(m.medicine_name || m.name || "").trim();
+      const strength = String(m.strength || "").trim();
+      let pharm = null;
+      if (name) {
+        // Exact name first (with or without the strength appended), then brand, then a
+        // prefix match — the clinic and pharmacy catalogues name things slightly differently.
+        const [cands] = await db.query(
+          `SELECT pm.id, pm.manufacturer, pm.pack_size, pm.units_per_pack, pm.gst_percentage,
+                  pm.selling_price, pm.prescription_required,
+                  md.medicine_name, md.brand_name, md.generic_name, md.strength, md.dosage_form,
+                  CASE
+                    WHEN LOWER(md.medicine_name) = LOWER(?) THEN 1
+                    WHEN LOWER(CONCAT(md.medicine_name, ' ', COALESCE(md.strength, ''))) = LOWER(?) THEN 1
+                    WHEN LOWER(md.brand_name) = LOWER(?) THEN 2
+                    ELSE 3
+                  END AS rank_
+             FROM pharmacy_medicines pm
+             JOIN medicine_data md ON md.id = pm.medicine_data_id
+            WHERE pm.admin_id = ? AND pm.status = 'active'
+              AND (LOWER(md.medicine_name) = LOWER(?)
+                   OR LOWER(CONCAT(md.medicine_name, ' ', COALESCE(md.strength, ''))) = LOWER(?)
+                   OR LOWER(md.brand_name) = LOWER(?)
+                   OR md.medicine_name LIKE CONCAT(?, '%'))
+            ORDER BY rank_,
+                     (? <> '' AND LOWER(COALESCE(md.strength, '')) = LOWER(?)) DESC,
+                     md.medicine_name
+            LIMIT 1`,
+          [name, `${name} ${strength}`.trim(), name, adminId, name, `${name} ${strength}`.trim(), name, name, strength, strength]
+        );
+        pharm = cands[0] || null;
+      }
+
+      let batches = [];
+      if (pharm) {
+        // Sellable stock only, oldest expiry first (FEFO). Quantities in whole strips,
+        // price per strip — what the sale screen's quantity stepper expects.
+        const [b] = await db.query(
+          `SELECT b.id, b.batch_number, b.expiry_date, b.branch,
+                  ${SQL_STRIPS("b.quantity_available", "b.units_per_pack")} AS quantity_available,
+                  b.quantity_available AS quantity_available_tablets,
+                  b.units_per_pack, b.selling_price, b.mrp
+             FROM pharmacy_medicine_batches b
+            WHERE b.admin_id = ? AND b.medicine_id = ? AND b.status = 'active'
+              AND (b.expiry_date IS NULL OR b.expiry_date >= CURDATE())
+              AND ${SQL_STRIPS("b.quantity_available", "b.units_per_pack")} > 0${bf.sql}
+            ORDER BY b.expiry_date IS NULL, b.expiry_date ASC, b.id ASC`,
+          [adminId, pharm.id, ...bf.params]
+        );
+        batches = b;
+      }
+
+      const in_stock = batches.length > 0;
+      if (!pharm) summary.not_in_inventory += 1;
+      else if (!in_stock) summary.out_of_stock += 1;
+      else summary.in_stock += 1;
+
+      out.push({
+        rx_medicine: {
+          medicine_id: m.medicine_id || null,
+          medicine_name: name,
+          strength,
+          quantity: Number(m.quantity) || 1,
+          when_to_take: m.when_to_take || null,
+          duration: m.duration || null,
+          description: m.description || null,
+        },
+        status: !pharm ? "not_in_inventory" : in_stock ? "in_stock" : "out_of_stock",
+        in_stock,
+        pharmacy_medicine: pharm
+          ? {
+              id: pharm.id,
+              medicine_name: [pharm.medicine_name, pharm.strength].filter(Boolean).join(" "),
+              manufacturer: pharm.manufacturer,
+              pack_size: pharm.pack_size,
+              gst_percentage: Number(pharm.gst_percentage) || 0,
+              prescription_required: !!pharm.prescription_required,
+            }
+          : null,
+        batches,
+      });
+    }
+
+    return res.json({
+      success: true,
+      prescription: { id: rx.id, doctor_name: rx.doctor_name, created_at: rx.created_at },
+      branch: scope && scope.filter ? scope.key : null,
+      data: out,
+      summary,
+    });
+  } catch (err) {
+    console.error("Pharmacy prescription resolve error:", err);
+    return res.status(500).json({ success: false, message: "Couldn't match the prescription to stock" });
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
    🔍 GET SINGLE PRESCRIPTION
 ═══════════════════════════════════════════════════════════════════ */
 

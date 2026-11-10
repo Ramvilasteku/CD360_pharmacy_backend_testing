@@ -125,10 +125,13 @@ router.post(
       // branch (or none) configured, scope.branch is that branch and nothing is filtered.
       let scope;
       try {
-        scope = await resolveScope(connection, req, { wanted: req.body.branch, forWrite: true });
+        scope = await resolveScope(connection, req, { wanted: (req.body || {}).branch, forWrite: true });
       } catch (e) {
         connection.release();
-        return sendBranchError(res, e);
+        // M3: sendBranchError only answers BranchErrors; anything else used to leave the request hanging
+        if (sendBranchError(res, e)) return;
+        console.error("Branch scope error:", e);
+        return res.status(500).json({ success: false, message: "Couldn't work out the branch for this request" });
       }
 
       // ── Basic validation ──
@@ -425,9 +428,12 @@ router.post(
       // Which branch this stock lands in (staff: always their own).
       let scope;
       try {
-        scope = await resolveScope(db, req, { wanted: req.body.branch, forWrite: true });
+        scope = await resolveScope(db, req, { wanted: (req.body || {}).branch, forWrite: true });
       } catch (e) {
-        return sendBranchError(res, e);
+        // M3: sendBranchError only answers BranchErrors; anything else used to leave the request hanging
+        if (sendBranchError(res, e)) return;
+        console.error("Branch scope error:", e);
+        return res.status(500).json({ success: false, message: "Couldn't work out the branch for this request" });
       }
 
       const {
@@ -683,7 +689,8 @@ router.get(
   authMiddleware,
   // 6 Nov 2026: the Inventory page and Stock Adjustment's batch search read this list, so
   // the inventory permissions open it too (ANY of these). sql/2026-11-06_inventory_permissions.sql
-  allowPermissions("pharmacy.medicines.view", "pharmacy.stock.view", "pharmacy.stock.create"),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions("pharmacy.medicines.view", "pharmacy.stock.view", "pharmacy.stock.create", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const tenantAdminId = getTenantAdminId(req);
@@ -710,7 +717,10 @@ router.get(
       try {
         scope = await resolveScope(db, req, { wanted: req.query.branch });
       } catch (e) {
-        return sendBranchError(res, e);
+        // M3: sendBranchError only answers BranchErrors; anything else used to leave the request hanging
+        if (sendBranchError(res, e)) return;
+        console.error("Branch scope error:", e);
+        return res.status(500).json({ success: false, message: "Couldn't work out the branch for this request" });
       }
       const bf = batchFilter(scope, "pmb");
       if (bf.sql) {
@@ -848,7 +858,10 @@ router.get(
       try {
         scope = await resolveScope(db, req, { wanted: req.query.branch });
       } catch (e) {
-        return sendBranchError(res, e);
+        // M3: sendBranchError only answers BranchErrors; anything else used to leave the request hanging
+        if (sendBranchError(res, e)) return;
+        console.error("Branch scope error:", e);
+        return res.status(500).json({ success: false, message: "Couldn't work out the branch for this request" });
       }
       const bf = batchFilter(scope, "pmb");
  
@@ -1114,7 +1127,10 @@ router.get(
       try {
         scope = await resolveScope(db, req, { wanted: req.query.branch });
       } catch (e) {
-        return sendBranchError(res, e);
+        // M3: sendBranchError only answers BranchErrors; anything else used to leave the request hanging
+        if (sendBranchError(res, e)) return;
+        console.error("Branch scope error:", e);
+        return res.status(500).json({ success: false, message: "Couldn't work out the branch for this request" });
       }
       const bf = batchFilter(scope, "pmb");
  
@@ -1912,7 +1928,8 @@ router.get(
 router.get(
   "/medicine/:medicine_id/available",
   authMiddleware,
-  allowPermissions("pharmacy.medicines.view"),
+  // M7: billing screens need this read — a cashier holding only pharmacy.sales.create must be able to use it
+  allowPermissions("pharmacy.medicines.view", "pharmacy.sales.create"),
   async (req, res) => {
     try {
       const tenantAdminId = getTenantAdminId(req);
@@ -1923,7 +1940,10 @@ router.get(
       try {
         scope = await resolveScope(db, req, { wanted: req.query.branch });
       } catch (e) {
-        return sendBranchError(res, e);
+        // M3: sendBranchError only answers BranchErrors; anything else used to leave the request hanging
+        if (sendBranchError(res, e)) return;
+        console.error("Branch scope error:", e);
+        return res.status(500).json({ success: false, message: "Couldn't work out the branch for this request" });
       }
       const bf = batchFilter(scope, "pmb");
 
@@ -1971,6 +1991,128 @@ router.get(
 
 // GET /api/pharmacy/batches/expiring?days=90
 // GET /api/pharmacy/batches/expiring?days=90&limit=5
+/* ============================================================
+   H6: UPDATE SHELF LOCATION of one batch  (ported from batches.js, which is not mounted)
+   PATCH /api/pharmacy/batches/update/location/:id   { storage_location: "Rack B / Shelf 3" }
+   Empty / null → the batch falls back to the medicine's default shelf.
+   Staff may only move batches of their own branch; the admin any batch.
+   Returns only the fields that changed, so the screen can merge them into its row.
+============================================================ */
+router.patch(
+  "/update/location/:id",
+  authMiddleware,
+  allowPermissions("pharmacy.medicines.edit"),
+  async (req, res) => {
+    try {
+      const tenantAdminId = getTenantAdminId(req);
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({ success: false, message: "Invalid batch id" });
+      }
+
+      const raw = req.body ? req.body.storage_location : undefined;
+      if (raw !== undefined && raw !== null && typeof raw !== "string" && typeof raw !== "number") {
+        return res.status(400).json({ success: false, message: "Location must be text" });
+      }
+      const location = raw === undefined || raw === null ? null : String(raw).trim().replace(/\s+/g, " ") || null;
+      if (location && location.length > 100) {
+        return res.status(400).json({ success: false, message: "Location can be at most 100 characters" });
+      }
+
+      const [[batch]] = await db.query(
+        `SELECT pmb.id, pmb.batch_number, pmb.branch, pm.storage_location AS medicine_location
+           FROM pharmacy_medicine_batches pmb
+           JOIN pharmacy_medicines pm ON pm.id = pmb.medicine_id
+          WHERE pmb.id = ? AND pmb.admin_id = ?`,
+        [id, tenantAdminId]
+      );
+      if (!batch) return res.status(404).json({ success: false, message: "Batch not found" });
+
+      let scope;
+      try {
+        scope = await resolveScope(db, req, { wanted: (req.body && req.body.branch) || req.query.branch });
+      } catch (e) {
+        if (sendBranchError(res, e)) return;
+        throw e;
+      }
+      const batchKey = String(batch.branch || "").trim().toLowerCase();
+      if (scope && scope.filter && batchKey !== scope.key) {
+        return res.status(403).json({
+          success: false,
+          message: `Batch ${batch.batch_number} belongs to ${batch.branch ? `the ${batch.branch} branch` : "no branch"}.`,
+        });
+      }
+
+      await db.query(
+        `UPDATE pharmacy_medicine_batches SET storage_location = ?, updated_at = NOW() WHERE id = ? AND admin_id = ?`,
+        [location, id, tenantAdminId]
+      );
+
+      return res.json({
+        success: true,
+        message: location
+          ? `Batch ${batch.batch_number} is now at ${location}`
+          : `Batch ${batch.batch_number} now uses the medicine's default shelf`,
+        data: {
+          id,
+          storage_location: location,
+          medicine_location: batch.medicine_location || null,
+          location: location || batch.medicine_location || null,
+        },
+      });
+    } catch (err) {
+      console.error("Update batch location error:", err);
+      return res.status(500).json({ success: false, message: "Failed to update the location" });
+    }
+  }
+);
+
+/* ============================================================
+   M10: STOCK TOTAL for the dashboard "Units in stock" tile
+   GET /api/pharmacy/batches/stock-total[?branch=Kukatpally]
+   Counts sellable stock only: active, not expired, quantity > 0.
+   Staff see their own branch; an admin sees all branches unless one is named.
+============================================================ */
+router.get(
+  "/stock-total",
+  authMiddleware,
+  allowPermissions("pharmacy.medicines.view"),
+  async (req, res) => {
+    try {
+      const tenantAdminId = getTenantAdminId(req);
+      let scope;
+      try {
+        scope = await resolveScope(db, req, { wanted: req.query.branch });
+      } catch (e) {
+        if (sendBranchError(res, e)) return;
+        throw e;
+      }
+      const bf = batchFilter(scope, "pmb");
+      const [[row]] = await db.query(
+        `SELECT COALESCE(SUM(pmb.quantity_available), 0) AS total_units,
+                COUNT(*)                                  AS total_batches,
+                COUNT(DISTINCT pmb.medicine_id)           AS total_medicines
+           FROM pharmacy_medicine_batches pmb
+          WHERE pmb.admin_id = ?
+            AND pmb.status = 'active'
+            AND pmb.quantity_available > 0
+            AND (pmb.expiry_date IS NULL OR pmb.expiry_date >= CURDATE())${bf.sql}`,
+        [tenantAdminId, ...bf.params]
+      );
+      return res.json({
+        success: true,
+        total_units: Number(row.total_units) || 0,
+        total_batches: Number(row.total_batches) || 0,
+        total_medicines: Number(row.total_medicines) || 0,
+        branch: scope && scope.filter ? scope.key : null,
+      });
+    } catch (err) {
+      console.error("Stock total error:", err);
+      return res.status(500).json({ success: false, message: "Failed to load stock total" });
+    }
+  }
+);
+
 router.get(
   "/expiring",
   authMiddleware,
