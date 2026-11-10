@@ -20,6 +20,7 @@ const transporter = nodemailer.createTransport({
   tls: {
     rejectUnauthorized: false, // ← prevents TLS handshake failures on some servers
   },
+  family: 4
 });
 
 /* ─────────────────────────────────────────────

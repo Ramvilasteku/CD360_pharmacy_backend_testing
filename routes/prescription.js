@@ -7,6 +7,7 @@ const { authMiddleware } = require("../middlewares/authMiddleware");
 const { allowRoles } = require("../middlewares/roleMiddleware");
 const { sendPrescriptionEmail } = require("../utils/mailer");
 const buildPrescriptionPDF = require("../utils/buildPrescriptionPdf");
+const { suggestPrescription, AiError } = require("../services/aiPrescription");
 const fs = require("fs-extra");
 
 const { v4: uuid } = require("uuid");
@@ -33,6 +34,129 @@ const safeParse = (value) => {
   }
   return value;
 };
+
+/* ─────────────────────────────────────────────────────────────────
+   DYNAMIC RX — chief-complaint templates
+
+   Every time a prescription is saved with a chief complaint, its
+   diagnosis / notes / treatment plan / medicines / tests are stored
+   as the default Rx for that complaint (per clinic + doctor).
+   Next time the doctor picks the same complaint, the pad is filled
+   from it and the doctor edits whatever differs for that patient.
+───────────────────────────────────────────────────────────────── */
+
+/* "  Fever   with Chills " → "fever with chills" */
+const complaintKey = (text) =>
+  String(text ?? "").trim().replace(/\s+/g, " ").toLowerCase().slice(0, 255);
+
+/* first value that is a non-empty string (after trim) */
+const firstText = (...vals) => {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+};
+
+/* ─────────────────────────────────────────────────────────────────
+   readNotes(body)
+   Accepts BOTH payload shapes so every pad keeps working:
+     A) notes: { chiefComplaint, treatmentPlan, doctorNotes, diagnosis }
+     B) flat:  chief_complaint, diagnosis, description, notes (string)
+───────────────────────────────────────────────────────────────── */
+function readNotes(body = {}) {
+  const n = body.notes && typeof body.notes === "object" ? body.notes : {};
+  return {
+    chiefComplaint: firstText(n.chiefComplaint, body.chief_complaint, body.chiefComplaint),
+    treatmentPlan:  firstText(n.treatmentPlan, body.description, body.treatment_plan),
+    doctorNotes:    firstText(
+      n.doctorNotes,
+      typeof body.notes === "string" ? body.notes : "",
+      body.doctor_notes
+    ),
+    diagnosis:      firstText(n.diagnosis, body.diagnosis),
+  };
+}
+
+/* Doctor whose templates we look up first */
+const resolveDoctorForLookup = (req) => {
+  if (req.user.role === "doctor") return Number(req.user.id) || 0;
+  return Number(req.query.doctor_id) || 0;
+};
+
+/* ─────────────────────────────────────────────────────────────────
+   upsertComplaintTemplate(...)
+   Insert or overwrite the template for (admin, doctor, complaint).
+   Never throws to the caller's flow — returns true/false.
+───────────────────────────────────────────────────────────────── */
+async function upsertComplaintTemplate({
+  adminId,
+  doctorId,
+  chiefComplaint,
+  diagnosis,
+  doctorNotes,
+  treatmentPlan,
+  medicines,
+  tests,
+  consultations,          // undefined → keep whatever the template already has
+  prescriptionId,
+  countUse = true,
+}) {
+  const key = complaintKey(chiefComplaint);
+  if (!adminId || !key) return false;
+
+  const meds = Array.isArray(medicines) ? medicines : [];
+  const tsts = Array.isArray(tests) ? tests : [];
+
+  /* nothing clinical to remember */
+  if (!meds.length && !tsts.length && !diagnosis && !doctorNotes && !treatmentPlan) {
+    return false;
+  }
+
+  await db.execute(
+    `INSERT INTO rx_complaint_templates
+       (admin_id, doctor_id, chief_complaint, complaint_key,
+        diagnosis, doctor_notes, treatment_plan,
+        medicines_json, tests_json, consultation_type_json,
+        use_count, last_prescription_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+     ON DUPLICATE KEY UPDATE
+       chief_complaint        = VALUES(chief_complaint),
+       diagnosis              = VALUES(diagnosis),
+       doctor_notes           = VALUES(doctor_notes),
+       treatment_plan         = VALUES(treatment_plan),
+       medicines_json         = VALUES(medicines_json),
+       tests_json             = VALUES(tests_json),
+       consultation_type_json = COALESCE(VALUES(consultation_type_json), consultation_type_json),
+       use_count              = use_count + ?,
+       last_prescription_id   = VALUES(last_prescription_id),
+       updated_at             = NOW()`,
+    [
+      adminId,
+      Number(doctorId) || 0,
+      String(chiefComplaint).trim().replace(/\s+/g, " ").slice(0, 255),
+      key,
+      diagnosis || null,
+      doctorNotes || null,
+      treatmentPlan || null,
+      JSON.stringify(meds),
+      JSON.stringify(tsts),
+      Array.isArray(consultations) ? JSON.stringify(consultations) : null,
+      prescriptionId ?? null,
+      countUse ? 1 : 0,
+    ]
+  );
+  return true;
+}
+
+/* Save template without ever failing the prescription save */
+async function rememberComplaintTemplate(args) {
+  try {
+    return await upsertComplaintTemplate(args);
+  } catch (err) {
+    console.warn("[RX-TEMPLATE] Could not save template:", err.message);
+    return false;
+  }
+}
 
 /* ─────────────────────────────────────────────────────────────────
    enrichMedicinesWithAmount(medicines, adminId)
@@ -63,8 +187,10 @@ async function enrichMedicinesWithAmount(medicines, adminId) {
   if (ids.length > 0) {
     const placeholders = ids.map(() => "?").join(", ");
     const [rows] = await db.execute(
+      /* include shared catalogue medicines (admin_id NULL) — that's where
+         POST /api/medicines saves them; before, their price came out as 0 */
       `SELECT id, amount FROM medicines
-       WHERE id IN (${placeholders}) AND admin_id = ?`,
+       WHERE id IN (${placeholders}) AND (admin_id = ? OR admin_id IS NULL)`,
       [...ids, adminId]
     );
     rows.forEach(r => { amountMap[r.id] = Number(r.amount ?? 0); });
@@ -82,6 +208,174 @@ async function enrichMedicinesWithAmount(medicines, adminId) {
     };
   });
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   🧠 CHIEF-COMPLAINT TEMPLATES  (dynamic Rx)
+   ⚠ Registered before every "/:id" route so "complaint-templates"
+     is never read as a prescription id.
+═══════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────
+   GET /api/prescriptions/complaint-templates?q=fev&doctor_id=5
+   Autocomplete list for the chief-complaint box.
+   The doctor's own templates come first; complaints only another
+   doctor in the clinic has saved are listed after them.
+───────────────────────────────────────────────────────────────── */
+router.get(
+  "/complaint-templates",
+  authMiddleware,
+  allowRoles("admin", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const adminId = getAdminId(req.user);
+      const doctorId = resolveDoctorForLookup(req);
+      const q = complaintKey(req.query.q || "");
+      const like = `%${q.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+
+      const [rows] = await db.execute(
+        `SELECT
+           t.id,
+           t.doctor_id,
+           t.chief_complaint,
+           t.complaint_key,
+           t.diagnosis,
+           COALESCE(JSON_LENGTH(t.medicines_json), 0) AS medicine_count,
+           COALESCE(JSON_LENGTH(t.tests_json), 0)     AS test_count,
+           t.use_count,
+           t.updated_at,
+           s.name AS doctor_name
+         FROM rx_complaint_templates t
+         LEFT JOIN staff s ON s.id = t.doctor_id
+         WHERE t.admin_id = ? AND t.complaint_key LIKE ?
+         ORDER BY (t.doctor_id = ?) DESC,
+                  (t.complaint_key LIKE ?) DESC,
+                  t.use_count DESC,
+                  t.updated_at DESC
+         LIMIT 60`,
+        [adminId, like, doctorId, `${q.replace(/[\\%_]/g, (c) => "\\" + c)}%`]
+      );
+
+      /* one row per complaint — the first one wins (own template first) */
+      const seen = new Set();
+      const data = [];
+      for (const r of rows) {
+        if (seen.has(r.complaint_key)) continue;
+        seen.add(r.complaint_key);
+        data.push({
+          id: r.id,
+          chief_complaint: r.chief_complaint,
+          diagnosis: r.diagnosis || "",
+          medicine_count: Number(r.medicine_count) || 0,
+          test_count: Number(r.test_count) || 0,
+          use_count: Number(r.use_count) || 0,
+          updated_at: r.updated_at,
+          doctor_id: r.doctor_id || null,
+          doctor_name: r.doctor_name || null,
+          is_own: Number(r.doctor_id) === doctorId,
+        });
+        if (data.length >= 15) break;
+      }
+
+      res.json({ success: true, data });
+    } catch (err) {
+      console.error("Complaint template list error:", err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  }
+);
+
+/* ─────────────────────────────────────────────────────────────────
+   GET /api/prescriptions/complaint-templates/lookup?complaint=Fever&doctor_id=5
+   Full saved Rx for one complaint, ready to drop into the pad.
+   Order of preference: this doctor → any doctor in the clinic.
+   Medicine prices are refreshed from the medicines table.
+───────────────────────────────────────────────────────────────── */
+router.get(
+  "/complaint-templates/lookup",
+  authMiddleware,
+  allowRoles("admin", "doctor", "receptionist"),
+  async (req, res) => {
+    try {
+      const adminId = getAdminId(req.user);
+      const doctorId = resolveDoctorForLookup(req);
+      const key = complaintKey(req.query.complaint || "");
+
+      if (!key) {
+        return res.status(400).json({ success: false, message: "complaint is required" });
+      }
+
+      const [[tpl]] = await db.execute(
+        `SELECT t.*, s.name AS doctor_name
+         FROM rx_complaint_templates t
+         LEFT JOIN staff s ON s.id = t.doctor_id
+         WHERE t.admin_id = ? AND t.complaint_key = ?
+         ORDER BY (t.doctor_id = ?) DESC, t.use_count DESC, t.updated_at DESC
+         LIMIT 1`,
+        [adminId, key, doctorId]
+      );
+
+      if (!tpl) return res.json({ success: true, data: null });
+
+      const medicines = await enrichMedicinesWithAmount(
+        safeParse(tpl.medicines_json),
+        adminId
+      );
+
+      res.json({
+        success: true,
+        data: {
+          id: tpl.id,
+          chief_complaint: tpl.chief_complaint,
+          diagnosis: tpl.diagnosis || "",
+          doctor_notes: tpl.doctor_notes || "",
+          treatment_plan: tpl.treatment_plan || "",
+          medicines,
+          tests: safeParse(tpl.tests_json),
+          consultations: safeParse(tpl.consultation_type_json),
+          use_count: Number(tpl.use_count) || 0,
+          updated_at: tpl.updated_at,
+          doctor_id: tpl.doctor_id || null,
+          doctor_name: tpl.doctor_name || null,
+          source: Number(tpl.doctor_id) === doctorId ? "own" : "clinic",
+        },
+      });
+    } catch (err) {
+      console.error("Complaint template lookup error:", err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  }
+);
+
+/* ─────────────────────────────────────────────────────────────────
+   DELETE /api/prescriptions/complaint-templates/:templateId
+   Doctors can delete only their own; admins any in the clinic.
+───────────────────────────────────────────────────────────────── */
+router.delete(
+  "/complaint-templates/:templateId",
+  authMiddleware,
+  allowRoles("admin", "doctor"),
+  async (req, res) => {
+    try {
+      const adminId = getAdminId(req.user);
+      const params = [req.params.templateId, adminId];
+      let sql = `DELETE FROM rx_complaint_templates WHERE id = ? AND admin_id = ?`;
+
+      if (req.user.role === "doctor") {
+        sql += ` AND doctor_id = ?`;
+        params.push(Number(req.user.id) || 0);
+      }
+
+      const [result] = await db.execute(sql, params);
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: "Template not found" });
+      }
+      res.json({ success: true, message: "Saved Rx removed for this complaint" });
+    } catch (err) {
+      console.error("Complaint template delete error:", err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  }
+);
 
 /* ═══════════════════════════════════════════════════════════════════
    📧 SEND MAIL HELPER
@@ -117,7 +411,7 @@ const sendMailForPrescription = async (prescriptionId) => {
         ap.id               AS appointment_id,
         ap.appointment_date AS appointment_date,
         ap.selected_branch  AS branch, 
-        ap.purpose          AS chief_complaint 
+        COALESCE(NULLIF(ap.purpose, ''), p.chief_complaint) AS chief_complaint
      FROM prescriptions p
      LEFT JOIN clients      c  ON c.id  = p.patient_id
      LEFT JOIN staff        s  ON s.id  = p.doctor_id
@@ -267,7 +561,7 @@ router.post(
         ap.id               AS appointment_id,
         ap.appointment_date AS appointment_date,
         ap.selected_branch  AS branch, 
-        ap.purpose          AS chief_complaint 
+        COALESCE(NULLIF(ap.purpose, ''), p.chief_complaint) AS chief_complaint
      FROM prescriptions p
      LEFT JOIN clients      c  ON c.id  = p.patient_id
      LEFT JOIN staff        s  ON s.id  = p.doctor_id
@@ -562,7 +856,7 @@ router.post(
             ap.id               AS appointment_id,
             ap.appointment_date AS appointment_date,
             ap.selected_branch  AS branch,
-            ap.purpose          AS chief_complaint
+            COALESCE(NULLIF(ap.purpose, ''), p.chief_complaint) AS chief_complaint
          FROM prescriptions p
          LEFT JOIN clients      c  ON c.id  = p.patient_id
          LEFT JOIN staff        s  ON s.id  = p.doctor_id
@@ -685,16 +979,16 @@ router.post("/", authMiddleware, async (req, res) => {
       consultation_types,
       medicines = [],
       tests = [],
-      notes,
-      description,
+      save_as_template = true,     // dynamic Rx: remember this Rx for the complaint
     } = req.body;
 
+    /* works with notes:{...} object OR flat diagnosis/description/notes fields */
     const {
       chiefComplaint,
       treatmentPlan,
       doctorNotes,
       diagnosis,
-    } = notes;
+    } = readNotes(req.body);
 
     if (!patient_id)
       return res.status(400).json({ success: false, message: "patient_id is required" });
@@ -706,25 +1000,28 @@ router.post("/", authMiddleware, async (req, res) => {
     const enrichedMedicines = await enrichMedicinesWithAmount(medicines, adminId);
 
     console.log("[CREATE] Enriched medicines:", JSON.stringify(enrichedMedicines, null, 2));
-    if (appointment_id) {
+    /* only overwrite the appointment's purpose with a real complaint —
+       an empty one used to blank it out */
+    if (appointment_id && chiefComplaint) {
       await db.execute(
         `UPDATE appointments
           SET purpose = ?
-          WHERE id = ?`,
-        [chiefComplaint || null, appointment_id]
+          WHERE id = ? AND admin_id = ?`,
+        [chiefComplaint, appointment_id, adminId]
       );
     }
     const [result] = await db.execute(
       `INSERT INTO prescriptions
-         (admin_id, patient_id, doctor_id, appointment_id,
+         (admin_id, patient_id, doctor_id, appointment_id, chief_complaint,
           consultation_type_json, medicines_json, tests_json,
           notes, description, diagnosis, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?, NOW())`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         adminId,
         patient_id,
         resolvedDoctorId,
         appointment_id ?? null,
+        chiefComplaint || null,   // prescriptions.chief_complaint
         JSON.stringify(consultation_types ?? []),
         JSON.stringify(enrichedMedicines),
         JSON.stringify(tests ?? []),
@@ -737,6 +1034,24 @@ router.post("/", authMiddleware, async (req, res) => {
 
     const prescriptionId = result.insertId;
 
+    /* ── Dynamic Rx: remember this Rx for the chief complaint ── */
+    const templateSaved =
+      save_as_template !== false && save_as_template !== "false"
+        ? await rememberComplaintTemplate({
+            adminId,
+            doctorId: resolvedDoctorId,
+            chiefComplaint,
+            diagnosis,
+            doctorNotes,
+            treatmentPlan,
+            medicines: enrichedMedicines,
+            tests: tests ?? [],
+            consultations: consultation_types,   // undefined → template keeps its own
+            prescriptionId,
+            countUse: true,
+          })
+        : false;
+
     try {
       await sendMailForPrescription(prescriptionId);
     } catch (mailErr) {
@@ -746,7 +1061,8 @@ router.post("/", authMiddleware, async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Prescription saved successfully",
-      data: { prescription_id: prescriptionId },
+      template_saved: templateSaved,
+      data: { prescription_id: prescriptionId, template_saved: templateSaved },
     });
   } catch (err) {
     console.error("Create prescription error:", err.message);
@@ -1554,8 +1870,9 @@ router.get("/:id", authMiddleware, allowRoles("admin", "doctor", "receptionist")
           id: rx.appointment_id || null,
           appointment_date: rx.appointment_date || null,
           status: rx.appointment_status || null,
-          purpose: rx.purpose || "",
+          purpose: rx.purpose || rx.chief_complaint || "",
         },
+        chief_complaint: rx.purpose || rx.chief_complaint || "",
         branch: rx.branch || rx.doctor_branch || "—",
         patient: { id: rx.patient_id, name: rx.patient_name || "—" },
         doctor: rx.doctor_id
@@ -1788,22 +2105,24 @@ router.put("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
       tests = [],
       consultation_types = [],
       appointment_id,
-      notes = {},
+      save_as_template = true,     // dynamic Rx: refresh the template for the complaint
     } = req.body;
 
+    /* works with notes:{...} object OR flat diagnosis/description/notes fields */
     const {
       chiefComplaint,
       treatmentPlan,
       doctorNotes,
       diagnosis,
-    } = notes;
+    } = readNotes(req.body);
 
     /* ── Enrich medicines with amount from medicines table ── */
     const enrichedMedicines = await enrichMedicinesWithAmount(medicines, adminId);
 
     console.log("[UPDATE] Enriched medicines:", JSON.stringify(enrichedMedicines, null, 2));
 
-    if (appointment_id) {
+    /* only overwrite the appointment's purpose with a real complaint */
+    if (appointment_id && chiefComplaint) {
       await db.execute(
         `
         UPDATE appointments
@@ -1811,7 +2130,7 @@ router.put("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
         WHERE id = ? AND admin_id = ?
         `,
         [
-          chiefComplaint || null,
+          chiefComplaint,
           appointment_id,
           adminId
         ]
@@ -1824,6 +2143,7 @@ router.put("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req, re
 UPDATE prescriptions
 SET
 appointment_id=?,
+chief_complaint=?,
 consultation_type_json=?,
 medicines_json=?,
 tests_json=?,
@@ -1835,6 +2155,7 @@ WHERE id=? AND admin_id=?
 `,
       [
         appointment_id ?? null,
+        chiefComplaint || null,
         JSON.stringify(consultation_types),
         JSON.stringify(enrichedMedicines),
         JSON.stringify(tests),
@@ -1849,13 +2170,43 @@ WHERE id=? AND admin_id=?
     if (!result.affectedRows)
       return res.status(404).json({ success: false, message: "Prescription not found" });
 
+    /* ── Dynamic Rx: the edited Rx becomes the template for its complaint ── */
+    let templateSaved = false;
+    if (save_as_template !== false && save_as_template !== "false" && chiefComplaint) {
+      let templateDoctorId = req.user.role === "doctor" ? req.user.id : null;
+      if (!templateDoctorId) {
+        const [[owner]] = await db.execute(
+          `SELECT doctor_id FROM prescriptions WHERE id = ? AND admin_id = ?`,
+          [id, adminId]
+        );
+        templateDoctorId = owner?.doctor_id ?? null;
+      }
+      templateSaved = await rememberComplaintTemplate({
+        adminId,
+        doctorId: templateDoctorId,
+        chiefComplaint,
+        diagnosis,
+        doctorNotes,
+        treatmentPlan,
+        medicines: enrichedMedicines,
+        tests,
+        consultations: req.body.consultation_types,   // undefined → template keeps its own
+        prescriptionId: Number(id),
+        countUse: false,                               // an edit is not a new use
+      });
+    }
+
     try {
       await sendMailForPrescription(id);
     } catch (mailErr) {
       console.warn(`[UPDATE] Mail failed for #${id}:`, mailErr.message);
     }
 
-    res.json({ success: true, message: "Prescription updated successfully" });
+    res.json({
+      success: true,
+      message: "Prescription updated successfully",
+      template_saved: templateSaved,
+    });
   } catch (err) {
     console.error("Update prescription error:", err.message);
     res.status(500).json({ success: false, message: "Server error" });
@@ -1884,6 +2235,30 @@ router.delete("/:id", authMiddleware, allowRoles("admin", "doctor"), async (req,
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
+router.post(
+  "/ai-suggest",
+  authMiddleware,
+  allowRoles("admin", "doctor"),
+  async (req, res) => {
+    try {
+      const data = await suggestPrescription({
+        adminId: getAdminId(req.user),
+        user: req.user,
+        chiefComplaint: req.body.chief_complaint,
+        patientId: req.body.patient_id || null,
+        extraNotes: req.body.extra_notes || "",
+      });
+      res.json({ success: true, data });
+    } catch (err) {
+      if (err instanceof AiError) {
+        return res.status(err.status).json({ success: false, message: err.message });
+      }
+      console.error("AI suggest error:", err);
+      res.status(500).json({ success: false, message: "Could not get an AI suggestion right now." });
+    }
+  }
+);
 
 
 

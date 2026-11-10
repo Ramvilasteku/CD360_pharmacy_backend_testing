@@ -411,9 +411,6 @@ router.get(
 
         b.subtotal,
 
-        b.discount_percentage,
-        b.discount_amount,
-
         b.tax_percentage,
         b.tax_amount,
 

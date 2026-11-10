@@ -73,12 +73,47 @@ require("./Cron/bedChargeCron.js");
 
 const ipdAnalyticsRoutes = require("./routes/ipd/ipdAnalyticsRoutes.js");
 
+// ---------- Modules ----------
+const roles = require('./modules/roles.js');
+const features = require("./modules/features.js");
+const roleFeatures = require("./modules/roleFeatures");
+const permissions = require("./modules/permissions.js");
+const rolePermissions = require("./modules/rolepermissions.js");
+const userRoleAssignment = require("./modules/userroleassignment.js");
+
+// ---------- Pharmacy ----------
+const pharmacyDispensingRoutes = require("./routes/pharmacy/pharmacy_dispensing.js");
+const pharmacyreturnRoutes = require("./routes/pharmacy/pharmacy_returns.js");
+const pharmacypaymentRoutes = require("./routes/pharmacy/pharmacy_payments.js");
+const pharmacyRoute = require("./modules/userroleassignment.js");
+const PermissionRoute = require("./modules/permissions.js");
+const rolePermissionRoute = require("./modules/rolepermissions.js");
+const pharmacyCategory = require("./routes/pharmacy/categories.js");
+const pharmacyMedicines = require("./routes/pharmacy/medicines.js");
+const pharmacySuppliers = require("./routes/pharmacy/pharmacySupplier.js");
+const pharmacyBatches = require("./routes/pharmacy/pharmacyMedicineBatches.js");
+const pharmacySales = require("./routes/pharmacy/pharmacySales.js");
+const pharmacySalesReports = require("./routes/pharmacy/pharmacySalesReports.js");
+const pharmacyCustomers = require("./routes/pharmacy/pharmacyCustomer.js");
+const pharmacyMedicineData = require("./routes/pharmacy/pharmacyMedicineData.js");
+const pharmacyPurchaseOrders = require("./routes/pharmacy/pharmacyPurchaseOrders.js");
+const pharmacyPurchaseItems = require("./routes/pharmacy/pharmacyPurchaseItems.js");
+const pharmacyStockTransactions = require("./routes/pharmacy/pharmacyStockTransactions.js");
+const pharmacyStockAdjustments = require("./routes/pharmacy/pharmacyStockAdjustments.js");
+const pharmacyReceivePurchaseOrder = require("./routes/pharmacy/pharmacyReceivePurchaseOrder.js");
+const pharmacyB2BSales = require("./routes/pharmacy/pharmacyB2BSales.js");
+const pharmacyStockTransfer = require("./routes/pharmacy/pharmacyStockTransfer.js");
+const pharmacyBranches = require("./routes/pharmacy/pharmacyBranches.js");
+const pharmacyPurchaseReturns = require("./routes/pharmacy/pharmacyPurchaseReturns.js");
+const pharmacyAccount = require("./routes/pharmacy/pharmacyAccount.js");
+const pharmacyProcurementReports = require("./routes/pharmacy/pharmacyProcurementReports.js");
+
 // ---------- MIDDLEWARE ----------
 app.use(
   cors({
-    origin: "https://caredesk360.com", // React URL
+    origin: "http://localhost:3000", // React URL
     credentials: true, // allow cookies / auth headers
-  })
+  }),
 );
 
 app.use(express.json());
@@ -94,24 +129,41 @@ initializeSocket(server); // handles socket connection
 // ---------- PUBLIC ROUTES ----------
 app.post("/login", authController.login);
 app.post("/verify-otp", authController.loginAuth, authController.verifyOtp);
+// app.post("/login", authController.login);
 app.post("/logout", authController.logout);
 app;
 // Test Route
 // app.use("/test", testRoute);
-app.get("/api/modules", authController.loginAuth,authController.getModules);
+app.get("/api/modules", authController.loginAuth, authController.getModules);
 app.get(
   "/api/all-modules",
   authController.loginAuth,
-  authController.getAllModules
+  authController.getAllModules,
 );
 
-app.get("/api/role-modules/:role", authController.loginAuth, authController.getRoleModules);
+app.get(
+  "/api/role-modules/:role",
+  authController.loginAuth,
+  authController.getRoleModules,
+);
 
-app.post("/api/role-modules", authController.loginAuth,authController.saveRoleModules);
+app.post(
+  "/api/role-modules",
+  authController.loginAuth,
+  authController.saveRoleModules,
+);
 
-app.put("/api/role-modules/:role", authController.loginAuth,authController.updateRoleModules);
+app.put(
+  "/api/role-modules/:role",
+  authController.loginAuth,
+  authController.updateRoleModules,
+);
 
-app.delete("/api/role-modules/:role",  authController.loginAuth,authController.deleteRoleModules);
+app.delete(
+  "/api/role-modules/:role",
+  authController.loginAuth,
+  authController.deleteRoleModules,
+);
 
 // ---------- PROTECTED ROUTES ----------
 
@@ -132,7 +184,7 @@ app.use("/api", documents);
 app.use("/api", payments);
 app.use("/api", notification);
 app.use("/api", forgotPassword);
-app.use("/schedule",doctorschedule);
+app.use("/schedule", doctorschedule);
 // app.use("/api", passwordrepositories);
 // app.use("/api", businessTypeRoutes);
 // app.use("/api", complianceTypeRoutes);
@@ -140,7 +192,7 @@ app.use("/schedule",doctorschedule);
 app.use("/api", invoiceRoutes);
 app.use("/api/medicines", medicinesRoutes);
 app.use("/api/tests", testsRoutes);
-app.use("/api/prescriptions",prescription );
+app.use("/api/prescriptions", prescription);
 app.use("/api/consultation-types", consultationTypesRoute);
 app.use("/api/client/prescriptions", clientPrescriptionsRouter);
 
@@ -166,6 +218,41 @@ app.use("/api", ipdPaymentsRoutes);
 app.use("/api", ipdPharmacyIssuesRoutes);
 app.use("/api", ipdAnalyticsRoutes);
 
+// ---------- Modul ROUTES ----------
+
+app.use("/api/roles", roles);
+app.use("/api/features", features);
+app.use("/api/role-features", roleFeatures);
+app.use("/api/permissions", permissions);
+app.use("/api/role-permissions", rolePermissions);
+app.use("/api/user-role-assignments", userRoleAssignment);
+
+// ---------- Pharmacy ROUTES ----------
+app.use("/api", pharmacyDispensingRoutes);
+app.use("/api", pharmacyreturnRoutes);
+app.use("/api/pharmacy", pharmacypaymentRoutes);
+app.use("/api/user-role-assignments",pharmacyRoute);
+app.use("/api/permissions", PermissionRoute);
+app.use("/api/role-permissions", rolePermissionRoute);
+app.use("/api/pharmacy/categories",pharmacyCategory);
+app.use("/api/pharmacy/medicines",pharmacyMedicines);
+app.use("/api/pharmacy/suppliers", pharmacySuppliers);
+app.use("/api/pharmacy/batches", pharmacyBatches);
+app.use("/api/pharmacy/sales", pharmacySales);
+app.use("/api/pharmacy/sales-reports", pharmacySalesReports);
+app.use("/api/pharmacy/customers", pharmacyCustomers);
+app.use("/api/pharmacy/medicine-data", pharmacyMedicineData);
+app.use("/api/pharmacy/purchase-orders", pharmacyPurchaseOrders);
+app.use("/api/pharmacy/purchase-items", pharmacyPurchaseItems);
+app.use("/api/pharmacy/stock-transactions", pharmacyStockTransactions);
+app.use("/api/pharmacy/stock-adjustments", pharmacyStockAdjustments);
+app.use("/api/pharmacy/purchase-receive", pharmacyReceivePurchaseOrder);
+app.use("/api/pharmacy/b2b-sales", pharmacyB2BSales);
+app.use("/api/pharmacy/stock-transfers", pharmacyStockTransfer);
+app.use("/api/pharmacy/branches", pharmacyBranches);
+app.use("/api/pharmacy/purchase-returns", pharmacyPurchaseReturns);
+app.use("/api/pharmacy/account", pharmacyAccount);
+app.use("/api/pharmacy/procurement-reports", pharmacyProcurementReports);
 
 
 // ---------- START HTTP + WS SERVER ----------
