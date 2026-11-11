@@ -14,7 +14,6 @@ router.post("/post/permissions", authMiddleware, allowRoles("admin"), async (req
     req.body;
 
   try {
-    // ─── STEP 1: Basic validation ───
     if (
       !permission_key ||
       !permission_name ||
